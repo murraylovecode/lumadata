@@ -1,0 +1,26 @@
+name: Lu.ma Attendee Bot
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v3
+      - uses: actions/setup-node@v3
+        with:
+          node-version: 18
+
+      - run: npm install
+      - run: npx playwright install
+
+      - run: node index.js
+        env:
+          LUMA_EMAIL: ${{ secrets.LUMA_EMAIL }}
+          LUMA_PASSWORD: ${{ secrets.LUMA_PASSWORD }}
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
