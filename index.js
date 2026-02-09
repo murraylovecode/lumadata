@@ -1,34 +1,33 @@
-console.log("Script started");
+console.log("Script started with saved session");
 
-require('dotenv').config();
 const { chromium } = require('playwright');
 
 (async () => {
   const browser = await chromium.launch({ headless: true });
-  const context = await browser.newContext({ acceptDownloads: true });
+
+  // Use the saved logged-in session
+  const context = await browser.newContext({
+    storageState: 'storageState.json',
+    acceptDownloads: true,
+  });
+
   const page = await context.newPage();
 
-  await page.goto('https://lu.ma/login', { waitUntil: 'networkidle' });
+  // Go directly to calendar (no login)
+  await page.goto('https://lu.ma/calendar', {
+    waitUntil: 'networkidle',
+    timeout: 60000,
+  });
 
-  // STEP 1 — Click "Continue with email"
-  await page.waitForSelector('text=Continue with email', { timeout: 60000 });
-  await page.click('text=Continue with email');
+  console.log("Opened Lu.ma calendar with stored session");
 
-  // STEP 2 — Now the real inputs appear
-  await page.waitForSelector('input[name="email"]', { timeout: 60000 });
+  // Small proof that we are really logged in
+  const url = page.url();
+  console.log("Current URL:", url);
 
-  await page.fill('input[name="email"]', process.env.LUMA_EMAIL);
-  await page.fill('input[name="password"]', process.env.LUMA_PASSWORD);
-
-  await page.click('button[type="submit"]');
-
-  await page.waitForLoadState('networkidle');
-
-  console.log("Logged into Lu.ma");
-
-  await page.goto('https://lu.ma/calendar', { waitUntil: 'networkidle' });
-
-  console.log("On calendar page");
+  if (url.includes('login')) {
+    throw new Error('Session expired. Need to regenerate storageState.json');
+  }
 
   await browser.close();
 })();
