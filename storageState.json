@@ -1,0 +1,55 @@
+{
+  "cookies": [
+    {
+      "name": "luma.did",
+      "value": "zpjnamhpba61o2qr1tp4z3bidy2uar",
+      "domain": ".luma.com",
+      "path": "/",
+      "expires": 1805177957.28972,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Strict"
+    },
+    {
+      "name": "luma.first-page",
+      "value": "%2Fsignin",
+      "domain": ".luma.com",
+      "path": "/",
+      "expires": 1805177957.289985,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Strict"
+    },
+    {
+      "name": "__cf_bm",
+      "value": "4fOn4hU1ol.q7s8xp4XJsPIL_TVklUNWkofqb8iu9PE-1770617957-1.0.1.1-pX.a0p6C9MqARGAxO0gnMSH0ZvWhxaDhAi80CDdEHP.dNFcA3TBfQjTXBmzs.rPrRNvZ1_iTlNnzSISC0ODys3x1iBfBFEISSDBP3ygnuks",
+      "domain": ".luma.com",
+      "path": "/",
+      "expires": 1770619757.290079,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "None"
+    },
+    {
+      "name": "luma.auth-session-key",
+      "value": "usr-dPi3Uv7E2ETajqT.8svdna3tzf57nrrjdw2p",
+      "domain": ".luma.com",
+      "path": "/",
+      "expires": 1775801993.575802,
+      "httpOnly": true,
+      "secure": true,
+      "sameSite": "Lax"
+    }
+  ],
+  "origins": [
+    {
+      "origin": "https://luma.com",
+      "localStorage": [
+        {
+          "name": "luma.active-tab-info",
+          "value": "{\"updated\":\"2026-02-09T11:50:17.678+05:30\",\"tabId\":\"0.18428414464324938\"}"
+        }
+      ]
+    }
+  ]
+}
