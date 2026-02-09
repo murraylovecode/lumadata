@@ -84,14 +84,19 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       } catch {}
 
       // STEP — open Guests tab
-      const guestsTabSelector = `a[href$="/guests"]`;
+      const guestsTabSelector = 'a[href$="/guests"]';
 
-      await page.click(guestsTabSelector);
+      // Scroll the tab into view
+      await page.locator(guestsTabSelector).scrollIntoViewIfNeeded();
       
-      // Wait for Guests tab content to render
+      // Force click (bypass visibility requirement)
+      await page.locator(guestsTabSelector).click({ force: true });
+      
+      console.log("Guests tab clicked");
+      
+      // Wait for Export button to appear (proves Guests loaded)
       await page.waitForSelector('text=Export attendees', { timeout: 30000 });
-      
-      console.log("Guests tab loaded");
+
 
 
       // STEP — export attendees
