@@ -45,10 +45,14 @@ function ensureDownloadDir() {
 
   // --- Wait for event cards ---
   console.log("Waiting for event cards...");
-  await page.waitForSelector('text=View event', { timeout: 60000 });
+  await page.waitForSelector('a[href^="/event/"]', { timeout: 60000 });
 
-  const eventButtons = await page.$$('text=View event');
-  console.log(`Found ${eventButtons.length} events`);
+  const eventLinks = await page.$$eval('a[href^="/event/"]', els =>
+    [...new Set(els.map(e => e.getAttribute('href')))]
+  );
+
+console.log(`Found ${eventLinks.length} events`);
+
 
   // --- Loop through events ---
   for (let i = 0; i < eventButtons.length; i++) {
