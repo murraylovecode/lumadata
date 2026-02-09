@@ -63,12 +63,25 @@ function pickColumn(headers, candidates) {
   console.log("Collecting event links...");
   // This selector looks for anchors containing "/event/" in the href attribute.
   // If your calendar uses a different pattern, change this selector.
-  await page.waitForSelector('a[href*="/event/"]', { timeout: 60000 });
-  const eventHrefElements = await page.$$eval('a[href*="/event/"]', els => {
-    // Return unique hrefs (dedupe)
-    const hrefs = els.map(e => e.getAttribute('href')).filter(Boolean);
-    return Array.from(new Set(hrefs));
-  });
+  console.log("Waiting for event cards to load...");
+
+// Wait for event cards
+await page.waitForSelector('text=View event', { timeout: 60000 });
+
+// Get all "View event" buttons
+const eventButtons = await page.$$('text=View event');
+
+console.log(`Found ${eventButtons.length} events`);
+
+for (let i = 0; i < eventButtons.length; i++) {
+  console.log(`Opening event ${i + 1}`);
+
+  await eventButtons[i].click();
+  await page.waitForLoadState('networkidle');
+
+  const eventUrl = page.url();
+  console.log("Event URL:", eventUrl);
+
 
   console.log(`Found ${eventHrefElements.length} event links`);
   if (!eventHrefElements.length) {
