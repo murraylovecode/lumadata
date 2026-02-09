@@ -14,7 +14,6 @@ function ensureDownloadDir() {
 }
 
 (async () => {
-  // --- Supabase setup ---
   const supabase = createClient(
     process.env.SUPABASE_URL,
     process.env.SUPABASE_SERVICE_KEY
@@ -22,7 +21,6 @@ function ensureDownloadDir() {
 
   ensureDownloadDir();
 
-  // --- Browser with saved Lu.ma session ---
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({
     storageState: 'storageState.json',
@@ -31,64 +29,59 @@ function ensureDownloadDir() {
 
   const page = await context.newPage();
 
-  // --- Open calendar dashboard ---
+  // --- Open Lu.ma dashboard ---
   await page.goto('https://lu.ma/calendar', {
     waitUntil: 'networkidle',
     timeout: 60000,
   });
 
-  console.log("Opened Lu.ma calendar:", page.url());
-  // Step into the actual calendar
-  await page.waitForSelector('a[href^="/cal/"]', { timeout: 60000 });
-  
-  const calendarLink = await page.$('a[href^="/cal/"]');
-  const calendarUrl = await calendarLink.getAttribute('href');
-  
-  console.log("Opening calendar:", calendarUrl);
-  
-  await page.goto(new URL(calendarUrl, 'https://lu.ma').toString(), {
-    waitUntil: 'networkidle'
-  });
-
+  console.log("Opened Lu.ma:", page.url());
 
   if (page.url().includes('login')) {
     throw new Error('Session expired. Recreate storageState.json');
   }
 
-  // --- Wait for event cards ---
-  console.log("Waiting for event cards...");
-  await page.waitForSelector('a[href^="/event/"]', { timeout: 60000 });
+  // --- Scroll to load lazy events ---
+  console.log("Scrolling page to load events...");
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      let totalHeight = 0;
+      const distance = 500;
+      const timer = setInterval(() => {
+        window.scrollBy(0, distance);
+        totalHeight += distance;
+        if (totalHeight >= document.body.scrollHeight) {
+          clearInterval(timer);
+          resolve();
+        }
+      }, 300);
+    });
+  });
 
-  const eventLinks = await page.$$eval('a[href^="/event/"]', els =>
+  // --- Collect event links ---
+  await page.waitForSelector('a[href*="/event/evt-"]', { timeout: 60000 });
+
+  const eventLinks = await page.$$eval('a[href*="/event/evt-"]', els =>
     [...new Set(els.map(e => e.getAttribute('href')))]
   );
 
-console.log(`Found ${eventLinks.length} events`);
+  console.log(`Found ${eventLinks.length} events`);
 
+  // --- Process each event ---
+  for (let i = 0; i < eventLinks.length; i++) {
+    const eventUrl = new URL(eventLinks[i], 'https://lu.ma').toString();
 
-  // --- Loop through events ---
-  for (let i = 0; i < eventButtons.length; i++) {
-    console.log(`\n=== Processing event ${i + 1}/${eventButtons.length} ===`);
+    console.log(`\n=== Processing event ${i + 1}/${eventLinks.length} ===`);
+    console.log("Opening:", eventUrl);
 
-    // Re-fetch buttons each loop (DOM refreshes after navigation)
-    const buttons = await page.$$('text=View event');
-    await buttons[i].click();
+    await page.goto(eventUrl, { waitUntil: 'networkidle' });
 
-    await page.waitForLoadState('networkidle');
+    const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || `evt-${Date.now()}`;
 
-    const eventUrl = page.url();
-    console.log("Event URL:", eventUrl);
-
-    const match = eventUrl.match(/\/event\/([^/?#]+)/i);
-    const event_id = match ? match[1] : `evt-${Date.now()}`;
-
-    // Get event name
     let event_name = event_id;
     try {
       const h1 = await page.$('h1');
-      if (h1) {
-        event_name = (await h1.innerText()).trim();
-      }
+      if (h1) event_name = (await h1.innerText()).trim();
     } catch {}
 
     console.log("Event:", event_name);
@@ -116,9 +109,7 @@ console.log(`Found ${eventLinks.length} events`);
     }
 
     if (!downloadedFile) {
-      console.warn("Export button not found. Skipping event.");
-      await page.goto('https://lu.ma/calendar', { waitUntil: 'networkidle' });
-      await page.waitForSelector('text=View event');
+      console.warn("Could not find export button, skipping event");
       continue;
     }
 
@@ -154,12 +145,27 @@ console.log(`Found ${eventLinks.length} events`);
     if (rows.length) {
       const { error } = await supabase.from('luma_ui_attendees').upsert(rows);
       if (error) console.error(error);
-      else console.log(`Upserted ${rows.length} rows to Supabase`);
+      else console.log(`Upserted ${rows.length} attendees`);
     }
 
-    // --- Back to calendar for next event ---
+    // --- Return to dashboard before next event ---
     await page.goto('https://lu.ma/calendar', { waitUntil: 'networkidle' });
-    await page.waitForSelector('text=View event');
+
+    // Scroll again to reload cards
+    await page.evaluate(async () => {
+      await new Promise((resolve) => {
+        let totalHeight = 0;
+        const distance = 500;
+        const timer = setInterval(() => {
+          window.scrollBy(0, distance);
+          totalHeight += distance;
+          if (totalHeight >= document.body.scrollHeight) {
+            clearInterval(timer);
+            resolve();
+          }
+        }, 300);
+      });
+    });
   }
 
   console.log("All events processed");
