@@ -8,10 +8,13 @@ const { chromium } = require('playwright');
   const context = await browser.newContext({ acceptDownloads: true });
   const page = await context.newPage();
 
-  // Go to login and WAIT properly
   await page.goto('https://lu.ma/login', { waitUntil: 'networkidle' });
 
-  // Lu.ma uses name="email" and name="password"
+  // STEP 1 — Click "Continue with email"
+  await page.waitForSelector('text=Continue with email', { timeout: 60000 });
+  await page.click('text=Continue with email');
+
+  // STEP 2 — Now the real inputs appear
   await page.waitForSelector('input[name="email"]', { timeout: 60000 });
 
   await page.fill('input[name="email"]', process.env.LUMA_EMAIL);
@@ -19,12 +22,10 @@ const { chromium } = require('playwright');
 
   await page.click('button[type="submit"]');
 
-  // Wait until login completes and dashboard loads
   await page.waitForLoadState('networkidle');
 
   console.log("Logged into Lu.ma");
 
-  // Go to calendar
   await page.goto('https://lu.ma/calendar', { waitUntil: 'networkidle' });
 
   console.log("On calendar page");
