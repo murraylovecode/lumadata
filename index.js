@@ -38,6 +38,18 @@ function ensureDownloadDir() {
   });
 
   console.log("Opened Lu.ma calendar:", page.url());
+  // Step into the actual calendar
+  await page.waitForSelector('a[href^="/cal/"]', { timeout: 60000 });
+  
+  const calendarLink = await page.$('a[href^="/cal/"]');
+  const calendarUrl = await calendarLink.getAttribute('href');
+  
+  console.log("Opening calendar:", calendarUrl);
+  
+  await page.goto(new URL(calendarUrl, 'https://lu.ma').toString(), {
+    waitUntil: 'networkidle'
+  });
+
 
   if (page.url().includes('login')) {
     throw new Error('Session expired. Recreate storageState.json');
