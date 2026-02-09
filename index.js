@@ -86,15 +86,13 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       // STEP — open Guests tab
       const guestsTabSelector = `a[href$="/guests"]`;
 
-      await Promise.all([
-        page.waitForNavigation({ waitUntil: 'networkidle' }),
-        page.click(guestsTabSelector)
-      ]);
+      await page.click(guestsTabSelector);
       
-      console.log("Opened Guests tab");
+      // Wait for Guests tab content to render
+      await page.waitForSelector('text=Export attendees', { timeout: 30000 });
+      
+      console.log("Guests tab loaded");
 
-
-      console.log("Opened Guests tab");
 
       // STEP — export attendees
       await page.waitForSelector('text=Export attendees', { timeout: 20000 });
