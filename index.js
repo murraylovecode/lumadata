@@ -83,17 +83,18 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         if (h1) event_name = (await h1.innerText()).trim();
       } catch {}
 
-      // STEP — open Guests tab
-      const guestsTab = 'a.tab[href$="/guests"]';
+      // STEP — open Guests tab (final correct way)
+      const guestsTab = page.locator('a.tab[href$="/guests"]').first();
 
-      await page.locator(guestsTab).scrollIntoViewIfNeeded();
-      await page.locator(guestsTab).click({ force: true });
-      
+      await guestsTab.scrollIntoViewIfNeeded();
+      await guestsTab.click({ force: true });
+
       console.log("Guests tab clicked");
-      
+
+      // Wait until Export button appears
       await page.waitForSelector('text=Export attendees', { timeout: 30000 });
 
-
+      // Export CSV
       const [download] = await Promise.all([
         page.waitForEvent('download', { timeout: 60000 }),
         page.click('text=Export attendees')
