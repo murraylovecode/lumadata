@@ -24,11 +24,10 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  // STEP 1 — open calendars page
+  // STEP 1 — calendars hub
   await page.goto('https://lu.ma/home/calendars', { waitUntil: 'networkidle' });
-  console.log("Opened calendars");
+  console.log("Opened calendars hub");
 
-  // STEP 2 — collect all calendar links
   await page.waitForSelector('a[href^="/calendar/manage/"]');
 
   const calendarLinks = await page.$$eval(
@@ -38,14 +37,14 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   console.log(`Found ${calendarLinks.length} calendars`);
 
-  // LOOP calendars
+  // LOOP CALENDARS
   for (const calHref of calendarLinks) {
     const calUrl = new URL(calHref, 'https://lu.ma').toString();
     console.log("\nOpening calendar:", calUrl);
 
     await page.goto(calUrl, { waitUntil: 'networkidle' });
 
-    // Scroll to load events
+    // scroll to load events
     await page.evaluate(async () => {
       await new Promise((resolve) => {
         let totalHeight = 0;
@@ -61,15 +60,15 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       });
     });
 
-    // STEP 3 — collect events inside calendar
+    // collect events
     const eventLinks = await page.$$eval(
-      'a[href*="/event/"]',
+      'a[href^="/event/manage/evt-"]',
       els => [...new Set(els.map(e => e.getAttribute('href')))]
     );
 
-    console.log(`Found ${eventLinks.length} events in this calendar`);
+    console.log(`Found ${eventLinks.length} events`);
 
-    // LOOP events
+    // LOOP EVENTS
     for (const evtHref of eventLinks) {
       const eventUrl = new URL(evtHref, 'https://lu.ma').toString();
       console.log("Opening event:", eventUrl);
@@ -77,16 +76,23 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       await page.goto(eventUrl, { waitUntil: 'networkidle' });
 
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
-      let event_name = event_id;
 
+      let event_name = event_id;
       try {
         const h1 = await page.$('h1');
         if (h1) event_name = (await h1.innerText()).trim();
       } catch {}
 
-      // Export attendees
+      // STEP — open Guests tab
+      await page.waitForSelector('text=Guests', { timeout: 20000 });
+      await page.click('text=Guests');
+      console.log("Opened Guests tab");
+
+      // STEP — export attendees
+      await page.waitForSelector('text=Export attendees', { timeout: 20000 });
+
       const [download] = await Promise.all([
-        page.waitForEvent('download'),
+        page.waitForEvent('download', { timeout: 60000 }),
         page.click('text=Export attendees')
       ]);
 
@@ -98,6 +104,8 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       // Parse CSV
       const csv = fs.readFileSync(file, 'utf8');
       const records = parse(csv, { columns: true, skip_empty_lines: true });
+
+      console.log(`Parsed ${records.length} attendees`);
 
       const now = new Date().toISOString();
       const rows = [];
@@ -130,5 +138,5 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
   }
 
   await browser.close();
-  console.log("Done");
+  console.log("All done");
 })();
