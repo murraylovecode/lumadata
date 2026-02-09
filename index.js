@@ -1,3 +1,5 @@
+console.log("Script started");
+
 require('dotenv').config();
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
