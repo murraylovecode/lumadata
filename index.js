@@ -73,12 +73,10 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     for (const evtHref of eventLinks) {
       const eventUrl = new URL(evtHref, 'https://lu.ma').toString();
-      const guestsUrl = `${eventUrl}/guests`;
+      
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
-
-      console.log("Opening Guests page:", guestsUrl);
-
-      await page.goto(guestsUrl, { waitUntil: 'networkidle' });
+      
+      await page.goto(eventUrl, { waitUntil: 'networkidle' });
 
       console.log("Searching for element that triggers CSV download...");
 
