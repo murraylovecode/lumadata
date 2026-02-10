@@ -24,7 +24,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  // STEP 1 — Calendars hub
+  // Open calendars hub
   await page.goto('https://lu.ma/home/calendars', { waitUntil: 'networkidle' });
   console.log("Opened calendars hub");
 
@@ -37,7 +37,6 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   console.log(`Found ${calendarLinks.length} calendars`);
 
-  // LOOP CALENDARS
   for (const calHref of calendarLinks) {
     const calUrl = new URL(calHref, 'https://lu.ma').toString();
     console.log("\nOpening calendar:", calUrl);
@@ -60,7 +59,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       });
     });
 
-    // Collect events
+    // Get events
     const eventLinks = await page.$$eval(
       'a[href^="/event/manage/evt-"]',
       els => [...new Set(els.map(e => e.getAttribute('href')))]
@@ -68,46 +67,44 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     console.log(`Found ${eventLinks.length} events`);
 
-    // LOOP EVENTS
     for (const evtHref of eventLinks) {
       const eventUrl = new URL(evtHref, 'https://lu.ma').toString();
       const guestsUrl = `${eventUrl}/guests`;
+      const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
 
       console.log("Opening Guests page:", guestsUrl);
 
       await page.goto(guestsUrl, { waitUntil: 'networkidle' });
 
-      // --- Find direct export link (no UI clicking) ---
-      const exportLink = await page.$eval(
-        'a[href*="/guests/export"]',
-        el => el.getAttribute('href')
-      );
+      console.log("Searching for element that triggers CSV download...");
 
-      if (!exportLink) {
-        throw new Error("Export link not found on Guests page");
+      let download = null;
+
+      // Try clicking anything clickable until a download starts
+      const candidates = await page.locator('button, a, [role="button"]').all();
+
+      for (const el of candidates) {
+        try {
+          [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 2000 }),
+            el.click({ force: true })
+          ]);
+          break;
+        } catch {}
       }
 
-      const exportUrl = new URL(exportLink, 'https://lu.ma').toString();
-      console.log("Export URL:", exportUrl);
-
-      const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
-
-      // Trigger download directly
-      const [download] = await Promise.all([
-        page.waitForEvent('download'),
-        page.goto(exportUrl)
-      ]);
+      if (!download) {
+        console.log("No download triggered on this event. Skipping.");
+        continue;
+      }
 
       const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
       await download.saveAs(file);
-
       console.log("Downloaded CSV:", file);
 
-      // --- Parse CSV ---
+      // Parse CSV
       const csv = fs.readFileSync(file, 'utf8');
       const records = parse(csv, { columns: true, skip_empty_lines: true });
-
-      console.log(`Parsed ${records.length} attendees`);
 
       let event_name = event_id;
       try {
