@@ -77,13 +77,36 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
       await page.goto(guestsUrl, { waitUntil: 'networkidle' });
 
-      // Export attendees
-      await page.waitForSelector('text=Export CSV', { timeout: 30000 });
+      // Export attendees (DOM-agnostic way)
+      const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
+      
+      let downloadedFile = null;
+      
+      // Try clicking every button until one triggers a download
+      const buttons = await page.locator('button').all();
+      
+      for (const btn of buttons) {
+        try {
+          const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 3000 }),
+            btn.click({ force: true })
+          ]);
+      
+          const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
+          await download.saveAs(file);
+      
+          downloadedFile = file;
+          console.log("Downloaded CSV:", file);
+          break;
+        } catch {
+          // not the export button, try next
+        }
+      }
+      
+      if (!downloadedFile) {
+        throw new Error("Could not find Export button on Guests page");
+      }
 
-      const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 60000 }),
-        page.click('text=Export CSV')
-      ]);
 
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
 
@@ -93,13 +116,9 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         if (h1) event_name = (await h1.innerText()).trim();
       } catch {}
 
-      const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-      await download.saveAs(file);
-
-      console.log("Downloaded CSV:", file);
-
+      
       // Parse CSV
-      const csv = fs.readFileSync(file, 'utf8');
+      const csv = fs.readFileSync(downloadedFile, 'utf8');
       const records = parse(csv, { columns: true, skip_empty_lines: true });
 
       console.log(`Parsed ${records.length} attendees`);
