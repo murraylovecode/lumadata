@@ -76,34 +76,26 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
       
-      await page.goto(eventUrl, { waitUntil: 'networkidle' });
+      await page.goto(eventUrl, { waitUntil: 'networkidle' });  
+      console.log("Opening Guests tab and exporting CSV...");
 
-      console.log("Searching for element that triggers CSV download...");
-
-      let download = null;
-
-      // Try clicking anything clickable until a download starts
-      const candidates = await page.locator('button, a, [role="button"]').all();
-
-      for (const el of candidates) {
-        try {
-          [download] = await Promise.all([
-            page.waitForEvent('download', { timeout: 2000 }),
-            el.click({ force: true })
-          ]);
-          break;
-        } catch {}
-      }
-
-      if (!download) {
-        const hasText = await page.content();
-        if (hasText.includes("No guests yet") || hasText.includes("0 guests")) {
-          console.log("Event has no attendees. Skipping.");
-        } else {
-          console.log("No export permission for this event. Skipping.");
-        }
-        continue;
-      }
+      // 1. Click Guests tab from the event overview page
+      await page.click('text=Guests');
+      await page.waitForSelector('text=All Guests');
+      
+      // 2. Open Export menu
+      await page.click('text=Export');
+      
+      // 3. Click Export CSV inside the menu
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 60000 }),
+        page.click('text=Export CSV')
+      ]);
+      
+      const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
+      await download.saveAs(file);
+      
+      console.log("Downloaded CSV:", file);
 
 
       const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
