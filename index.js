@@ -94,9 +94,15 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       }
 
       if (!download) {
-        console.log("No download triggered on this event. Skipping.");
+        const hasText = await page.content();
+        if (hasText.includes("No guests yet") || hasText.includes("0 guests")) {
+          console.log("Event has no attendees. Skipping.");
+        } else {
+          console.log("No export permission for this event. Skipping.");
+        }
         continue;
       }
+
 
       const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
       await download.saveAs(file);
