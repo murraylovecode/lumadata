@@ -24,7 +24,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  // STEP 1 — calendars hub
+  // STEP 1 — Calendars hub
   await page.goto('https://lu.ma/home/calendars', { waitUntil: 'networkidle' });
   console.log("Opened calendars hub");
 
@@ -44,7 +44,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
     await page.goto(calUrl, { waitUntil: 'networkidle' });
 
-    // scroll to load events
+    // Scroll to load events
     await page.evaluate(async () => {
       await new Promise((resolve) => {
         let totalHeight = 0;
@@ -60,7 +60,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       });
     });
 
-    // collect events
+    // Collect events
     const eventLinks = await page.$$eval(
       'a[href^="/event/manage/evt-"]',
       els => [...new Set(els.map(e => e.getAttribute('href')))]
@@ -71,9 +71,19 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
     // LOOP EVENTS
     for (const evtHref of eventLinks) {
       const eventUrl = new URL(evtHref, 'https://lu.ma').toString();
-      console.log("Opening event:", eventUrl);
+      const guestsUrl = `${eventUrl}/guests`;
 
-      await page.goto(eventUrl, { waitUntil: 'networkidle' });
+      console.log("Opening Guests page:", guestsUrl);
+
+      await page.goto(guestsUrl, { waitUntil: 'networkidle' });
+
+      // Export attendees
+      await page.waitForSelector('text=Export attendees', { timeout: 30000 });
+
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 60000 }),
+        page.click('text=Export attendees')
+      ]);
 
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
 
@@ -82,23 +92,6 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         const h1 = await page.$('h1');
         if (h1) event_name = (await h1.innerText()).trim();
       } catch {}
-
-      // STEP — open Guests tab (final correct way)
-      const guestsTab = page.locator('a.tab[href$="/guests"]').first();
-
-      await guestsTab.scrollIntoViewIfNeeded();
-      await guestsTab.click({ force: true });
-
-      console.log("Guests tab clicked");
-
-      // Wait until Export button appears
-      await page.waitForSelector('text=Export attendees', { timeout: 30000 });
-
-      // Export CSV
-      const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 60000 }),
-        page.click('text=Export attendees')
-      ]);
 
       const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
       await download.saveAs(file);
