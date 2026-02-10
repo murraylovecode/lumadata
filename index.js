@@ -78,11 +78,11 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       await page.goto(guestsUrl, { waitUntil: 'networkidle' });
 
       // Export attendees
-      await page.waitForSelector('text=Export attendees', { timeout: 30000 });
+      await page.waitForSelector('text=Export CSV', { timeout: 30000 });
 
       const [download] = await Promise.all([
         page.waitForEvent('download', { timeout: 60000 }),
-        page.click('text=Export attendees')
+        page.click('text=Export CSV')
       ]);
 
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
