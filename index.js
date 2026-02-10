@@ -78,8 +78,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       await page.goto(guestsUrl, { waitUntil: 'networkidle' });
 
       // Export attendees (DOM-agnostic way)
-      const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
-      
+            
       let downloadedFile = null;
       
       // Try clicking every button until one triggers a download
