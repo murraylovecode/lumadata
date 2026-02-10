@@ -21,14 +21,18 @@ jobs:
       - name: Install packages
         run: npm install
 
-      - name: Install Playwright system deps
+      - name: Install Playwright deps
         run: npx playwright install-deps
 
       - name: Install Playwright browsers
         run: npx playwright install
 
-      - name: Run script
-        run: node index.js
+      # THIS IS THE IMPORTANT PART
+      - name: Install virtual display (Xvfb)
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+
+      - name: Run bot in real browser (not headless)
+        run: xvfb-run --auto-servernum node index.js
         env:
           LUMA_EMAIL: ${{ secrets.LUMA_EMAIL }}
           LUMA_PASSWORD: ${{ secrets.LUMA_PASSWORD }}
