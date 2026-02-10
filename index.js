@@ -92,12 +92,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         page.click('text=Export CSV')
       ]);
       
-      const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-      await download.saveAs(file);
       
-      console.log("Downloaded CSV:", file);
-
-
       const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
       await download.saveAs(file);
       console.log("Downloaded CSV:", file);
