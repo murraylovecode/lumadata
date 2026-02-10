@@ -16,7 +16,11 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
     process.env.SUPABASE_SERVICE_KEY
   );
 
-  const browser = await chromium.launch({ headless: true });
+  const browser = await chromium.launch({
+      headless: false,
+      args: ['--no-sandbox', '--disable-setuid-sandbox']
+    });
+
   const context = await browser.newContext({
     storageState: 'storageState.json',
     acceptDownloads: true,
