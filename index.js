@@ -77,50 +77,43 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
       await page.goto(guestsUrl, { waitUntil: 'networkidle' });
 
-      // Export attendees (DOM-agnostic way)
-            
-      let downloadedFile = null;
-      
-      // Try clicking every button until one triggers a download
-      const buttons = await page.locator('button').all();
-      
-      for (const btn of buttons) {
-        try {
-          const [download] = await Promise.all([
-            page.waitForEvent('download', { timeout: 3000 }),
-            btn.click({ force: true })
-          ]);
-      
-          const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-          await download.saveAs(file);
-      
-          downloadedFile = file;
-          console.log("Downloaded CSV:", file);
-          break;
-        } catch {
-          // not the export button, try next
-        }
-      }
-      
-      if (!downloadedFile) {
-        throw new Error("Could not find Export button on Guests page");
+      // --- Find direct export link (no UI clicking) ---
+      const exportLink = await page.$eval(
+        'a[href*="/guests/export"]',
+        el => el.getAttribute('href')
+      );
+
+      if (!exportLink) {
+        throw new Error("Export link not found on Guests page");
       }
 
+      const exportUrl = new URL(exportLink, 'https://lu.ma').toString();
+      console.log("Export URL:", exportUrl);
 
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
+
+      // Trigger download directly
+      const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        page.goto(exportUrl)
+      ]);
+
+      const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
+      await download.saveAs(file);
+
+      console.log("Downloaded CSV:", file);
+
+      // --- Parse CSV ---
+      const csv = fs.readFileSync(file, 'utf8');
+      const records = parse(csv, { columns: true, skip_empty_lines: true });
+
+      console.log(`Parsed ${records.length} attendees`);
 
       let event_name = event_id;
       try {
         const h1 = await page.$('h1');
         if (h1) event_name = (await h1.innerText()).trim();
       } catch {}
-
-      
-      // Parse CSV
-      const csv = fs.readFileSync(downloadedFile, 'utf8');
-      const records = parse(csv, { columns: true, skip_empty_lines: true });
-
-      console.log(`Parsed ${records.length} attendees`);
 
       const now = new Date().toISOString();
       const rows = [];
