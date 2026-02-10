@@ -17,9 +17,9 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
   );
 
   const browser = await chromium.launch({
-      headless: false,
-      args: ['--no-sandbox', '--disable-setuid-sandbox']
-    });
+    headless: false,
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
+  });
 
   const context = await browser.newContext({
     storageState: 'storageState.json',
@@ -28,10 +28,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  // Open calendars hub
   await page.goto('https://lu.ma/home/calendars', { waitUntil: 'networkidle' });
-  console.log("Opened calendars hub");
-
   await page.waitForSelector('a[href^="/calendar/manage/"]');
 
   const calendarLinks = await page.$$eval(
@@ -39,71 +36,44 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
     els => [...new Set(els.map(e => e.getAttribute('href')))]
   );
 
-  console.log(`Found ${calendarLinks.length} calendars`);
-
   for (const calHref of calendarLinks) {
     const calUrl = new URL(calHref, 'https://lu.ma').toString();
-    console.log("\nOpening calendar:", calUrl);
-
     await page.goto(calUrl, { waitUntil: 'networkidle' });
 
-    // Scroll to load events
-    await page.evaluate(async () => {
-      await new Promise((resolve) => {
-        let totalHeight = 0;
-        const distance = 500;
-        const timer = setInterval(() => {
-          window.scrollBy(0, distance);
-          totalHeight += distance;
-          if (totalHeight >= document.body.scrollHeight) {
-            clearInterval(timer);
-            resolve();
-          }
-        }, 300);
-      });
-    });
-
-    // Get events
     const eventLinks = await page.$$eval(
       'a[href^="/event/manage/evt-"]',
       els => [...new Set(els.map(e => e.getAttribute('href')))]
     );
 
-    console.log(`Found ${eventLinks.length} events`);
-
     for (const evtHref of eventLinks) {
       const eventUrl = new URL(evtHref, 'https://lu.ma').toString();
-      
       const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
-      
-      await page.goto(eventUrl, { waitUntil: 'networkidle' });  
-      console.log("Opening Guests tab and exporting CSV...");
 
-      // 1. Click Guests tab from the event overview page
-            
-      // 2. Open Export menu
+      console.log("Opening event:", eventUrl);
+      await page.goto(eventUrl, { waitUntil: 'networkidle' });
+
+      // 🔴 THIS IS THE KEY STEP YOU WERE MISSING
+      console.log("Opening Guests drawer...");
+      await page.locator('text=/\\d+ Guests/').first().click();
+
+      await page.waitForSelector('text=All Guests');
+
+      console.log("Exporting CSV...");
+
       await page.click('text=Export');
-      
-      // 3. Click Export CSV inside the menu
+
       const [download] = await Promise.all([
         page.waitForEvent('download', { timeout: 60000 }),
         page.click('text=Export CSV')
       ]);
-      
-      
+
       const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
       await download.saveAs(file);
-      console.log("Downloaded CSV:", file);
+      console.log("Downloaded:", file);
 
       // Parse CSV
       const csv = fs.readFileSync(file, 'utf8');
       const records = parse(csv, { columns: true, skip_empty_lines: true });
-
-      let event_name = event_id;
-      try {
-        const h1 = await page.$('h1');
-        if (h1) event_name = (await h1.innerText()).trim();
-      } catch {}
 
       const now = new Date().toISOString();
       const rows = [];
@@ -114,7 +84,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         rows.push({
           email: r.Email.toLowerCase(),
           event_id,
-          event_name,
+          event_name: event_id,
           name: r.Name || null,
           ticket_type: r['Ticket Type'] || null,
           status: r.Status || null,
@@ -132,9 +102,10 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         await supabase.from('luma_ui_attendees').upsert(rows);
         console.log(`Upserted ${rows.length} attendees`);
       }
+
+      await page.keyboard.press('Escape'); // close drawer
     }
   }
 
   await browser.close();
-  console.log("All done");
 })();
