@@ -80,8 +80,8 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       console.log("Opening Guests tab and exporting CSV...");
 
       // 1. Click Guests tab from the event overview page
-      await page.click('text=Guests');
-      await page.waitForSelector('text=All Guests');
+      await page.locator('a.tab[href$="/guests"]').first().click();
+      await page.waitForSelector('table');
       
       // 2. Open Export menu
       await page.click('text=Export');
