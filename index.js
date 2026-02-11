@@ -1,21 +1,14 @@
-console.log("Lu.ma attendee bot — stable final");
+console.log("Lu.ma CSV downloader — UI only");
 
 require('dotenv').config();
-const fs = require('fs');
 const path = require('path');
+const fs = require('fs');
 const { chromium } = require('playwright');
-const { createClient } = require('@supabase/supabase-js');
-const parse = require('csv-parse/sync').parse;
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
-  const supabase = createClient(
-    process.env.SUPABASE_URL,
-    process.env.SUPABASE_SERVICE_KEY
-  );
-
   const browser = await chromium.launch({
     headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
@@ -28,102 +21,67 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  // STEP 1 — Open your profile
+  // Open your profile
   await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
-  console.log("Opened Murray profile");
+  console.log("Opened profile");
 
-  // Click BOTH "View All" buttons (Hosting + Past Events)
-  const viewAllButtons = page.getByText('View All', { exact: true });
-  const count = await viewAllButtons.count();
-  for (let i = 0; i < count; i++) {
-    await viewAllButtons.nth(i).click().catch(() => {});
-    await page.waitForTimeout(1500);
-  }
+  async function processSection(sectionIndex) {
+    // 0 = Hosting, 1 = Past Events
+    const viewAll = page.getByRole('button', { name: 'View All' });
+    await viewAll.nth(sectionIndex).click();
 
-  // STEP 2 — Collect ALL event links (the only selector that matters)
-  const eventLinks = await page.$$eval(
-    'a[href^="/home?e=evt-"]',
-    els => [...new Set(els.map(e => e.href))]
-  );
+    await page.waitForSelector('a[href^="/home?e=evt-"]');
 
-  console.log(`Found ${eventLinks.length} hosted events`);
+    const cards = await page.locator('a[href^="/home?e=evt-"]').all();
+    console.log(`Found ${cards.length} events`);
 
-  for (const link of eventLinks) {
-    try {
-      console.log("\nOpening event popup:", link);
-
-      // Open popup page
-      await page.goto(link, { waitUntil: 'networkidle' });
-
-      // Click MANAGE inside popup
-      await page.getByText('Manage').click({ timeout: 10000 });
-
-      await page.waitForLoadState('networkidle');
-
-      const manageUrl = page.url();
-      const event_id = manageUrl.match(/evt-[^/?#]+/i)?.[0];
-      console.log("Managing:", event_id);
-
-      // STEP 3 — Guests tab
-      await page.getByText('Guests').click();
-      await page.waitForTimeout(2000);
-
-      // STEP 4 — Download CSV
-      await page.getByText('Download as CSV').click();
-
-      const download = await page.waitForEvent('download', { timeout: 60000 });
-
-      const filePath = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-      await download.saveAs(filePath);
-
-      console.log("Downloaded:", filePath);
-
-      // STEP 5 — Parse CSV
-      const csv = fs.readFileSync(filePath, 'utf8');
-      const records = parse(csv, { columns: true, skip_empty_lines: true });
-
-      let event_name = event_id;
+    for (let i = 0; i < cards.length; i++) {
       try {
-        event_name = await page.locator('h1').first().innerText();
-      } catch {}
+        console.log(`Opening event ${i + 1}/${cards.length}`);
 
-      const now = new Date().toISOString();
-      const rows = [];
+        // Open popup
+        await cards[i].click();
 
-      for (const r of records) {
-        if (!r.email) continue;
+        // Click Manage in popup
+        await page.getByText('Manage', { exact: true }).click();
 
-        rows.push({
-          email: r.email.toLowerCase(),
-          event_id,
-          event_name,
-          name: r.name || null,
-          ticket_type: r.ticket_name || null,
-          status: r.approval_status || null,
-          registered_at: r.created_at
-            ? new Date(r.created_at).toISOString()
-            : null,
-          raw: r,
-          enriched: null,
-          first_seen_at: now,
-          last_seen_at: now,
-        });
+        await page.waitForSelector('text=Guests');
+
+        // Go to Guests tab
+        await page.getByText('Guests', { exact: true }).click();
+
+        // Download CSV
+        const [download] = await Promise.all([
+          page.waitForEvent('download', { timeout: 60000 }),
+          page.getByText('Download as CSV', { exact: true }).click()
+        ]);
+
+        const eventUrl = page.url();
+        const eventId = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
+
+        const filePath = path.join(DOWNLOAD_DIR, `${eventId}.csv`);
+        await download.saveAs(filePath);
+
+        console.log("Downloaded:", filePath);
+
+        // Go back to profile for next event
+        await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+        await page.getByRole('button', { name: 'View All' }).nth(sectionIndex).click();
+        await page.waitForSelector('a[href^="/home?e=evt-"]');
+
+      } catch (e) {
+        console.log("Skipping event due to error:", e.message);
+        await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
       }
-
-      if (rows.length) {
-        await supabase.from('luma_ui_attendees').upsert(rows);
-        console.log(`Upserted ${rows.length} attendees`);
-      }
-
-      // Go back to profile for next event
-      await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
-
-    } catch (err) {
-      console.log("Skipping event due to error:", err.message);
-      await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
     }
   }
 
+  // Hosting
+  await processSection(0);
+
+  // Past Events
+  await processSection(1);
+
+  console.log("All CSVs downloaded");
   await browser.close();
-  console.log("All done");
 })();
