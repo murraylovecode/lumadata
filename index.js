@@ -1,4 +1,4 @@
-console.log("Lu.ma attendee bot – UI faithful v2");
+console.log("Lu.ma attendee bot – exact UI flow");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -6,12 +6,12 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
 
 (async () => {
   const browser = await chromium.launch({
     headless: false,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    args: ['--no-sandbox']
   });
 
   const context = await browser.newContext({
@@ -21,16 +21,18 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  async function processViewAllByIndex(index, label) {
-    console.log(`\nProcessing: ${label}`);
+  // Step 1 — Open your profile
+  await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+  console.log("Opened profile");
 
-    await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+  async function processSection(viewAllButtonSelector, sectionName) {
+    console.log(`\nProcessing ${sectionName}`);
 
-    const viewAllButtons = await page.getByText('View All').all();
-    await viewAllButtons[index].click();
-    await page.waitForLoadState('networkidle');
+    await page.click(viewAllButtonSelector);
+    await page.waitForTimeout(3000);
 
-    const cards = await page.locator('a[href*="?e=evt-"]').all();
+    // Find all event cards by the "By Murray" text
+    const cards = await page.locator('div:has-text("By Murray")').all();
     console.log(`Found ${cards.length} events`);
 
     for (let i = 0; i < cards.length; i++) {
@@ -38,41 +40,53 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         console.log(`Opening event ${i + 1}`);
 
         await cards[i].click();
-        await page.waitForTimeout(1500);
-
-        await page.getByText('Manage').click();
-        await page.waitForLoadState('networkidle');
-
-        const event_id = page.url().match(/evt-[^/?#]+/i)?.[0];
-        console.log("Managing:", event_id);
-
-        await page.getByText('Guests').click();
         await page.waitForTimeout(2000);
 
+        // Popup → click Manage
+        await page.click('text=Manage');
+        await page.waitForLoadState('networkidle');
+
+        // Click Guests tab
+        await page.click('text=Guests');
+        await page.waitForTimeout(2000);
+
+        // Click Download as CSV
         const [download] = await Promise.all([
-          page.waitForEvent('download', { timeout: 60000 }),
-          page.getByText('Download as CSV').click()
+          page.waitForEvent('download'),
+          page.click('text=Download as CSV')
         ]);
 
-        const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-        await download.saveAs(file);
-        console.log("Downloaded:", file);
+        const filePath = path.join(DOWNLOAD_DIR, `event-${Date.now()}.csv`);
+        await download.saveAs(filePath);
 
-      } catch (e) {
-        console.log("Error, moving next");
+        console.log("Downloaded:", filePath);
+
+        await page.goBack();
+        await page.goBack();
+        await page.waitForTimeout(2000);
+
+      } catch (err) {
+        console.log("Error on this event, moving on");
+        await page.goBack().catch(()=>{});
       }
     }
+
+    await page.goto('https://luma.com/user/murray');
+    await page.waitForTimeout(2000);
   }
 
-  await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
-  console.log("Opened profile");
+  // Hosting → View All
+  await processSection(
+    '#__next > div > div.jsx-114924862.jsx-2149634693.page-content.sticky-topnav > div > div:nth-child(2) > div:nth-child(1) > div.jsx-55dd68548432feb0.mb-1.flex-baseline.spread.gap-2 > button',
+    'Hosting'
+  );
 
-  // 0 = Hosting
-  await processViewAllByIndex(0, "Hosting");
+  // Past Events → View All
+  await processSection(
+    '#__next > div > div.jsx-114924862.jsx-2149634693.page-content.sticky-topnav > div > div:nth-child(2) > div:nth-child(2) > div.jsx-55dd68548432feb0.mb-1.flex-baseline.spread.gap-2 > button',
+    'Past Events'
+  );
 
-  // 1 = Past Events
-  await processViewAllByIndex(1, "Past Events");
-
-  await browser.close();
   console.log("All done");
+  await browser.close();
 })();
