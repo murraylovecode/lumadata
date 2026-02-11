@@ -26,56 +26,75 @@ const supabase = createClient(
 
   const page = await context.newPage();
 
-  // STEP 1 — Go to Murray profile (hosted events list)
+  // Open Murray profile
   await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
   console.log("Opened Murray profile");
 
-  // Collect event links from profile page
-  const eventLinks = await page.$$eval('a[href*="/event/manage/evt-"]',
-    els => [...new Set(els.map(e => e.href))]
-  );
+  // Get all event cards
+  const eventCards = await page.locator('a[href^="/"]').filter({ hasText: /./ }).all();
+  console.log("Event cards found:", eventCards.length);
 
-  console.log("Found hosted events:", eventLinks.length);
+  for (let i = 0; i < eventCards.length; i++) {
+    try {
+      console.log(`Opening event card ${i + 1}`);
 
-  for (const eventUrl of eventLinks) {
-    const event_id = eventUrl.match(/evt-[^/]+/)[0];
-    const guestsUrl = `${eventUrl}/guests`;
+      await eventCards[i].click();
+      await page.waitForTimeout(2000);
 
-    console.log("Opening Guests:", guestsUrl);
-    await page.goto(guestsUrl, { waitUntil: 'networkidle' });
+      // Click Manage in popup
+      await page.click('text=Manage');
+      await page.waitForLoadState('networkidle');
 
-    // Click Export → Export CSV
-    await page.click('text=Export');
+      const manageUrl = page.url();
+      if (!manageUrl.includes('/event/manage/evt-')) {
+        console.log("Not a hosted event. Skipping.");
+        await page.goBack();
+        continue;
+      }
 
-    const [download] = await Promise.all([
-      page.waitForEvent('download'),
-      page.click('text=Export CSV')
-    ]);
+      const event_id = manageUrl.match(/evt-[^/]+/)[0];
 
-    const filePath = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-    await download.saveAs(filePath);
-    console.log("Downloaded:", filePath);
+      // Go to guests
+      await page.goto(`${manageUrl}/guests`, { waitUntil: 'networkidle' });
 
-    // Parse CSV
-    const csv = fs.readFileSync(filePath);
-    const records = parse(csv, { columns: true });
+      console.log("Exporting CSV for", event_id);
 
-    const now = new Date().toISOString();
+      await page.click('text=Export');
 
-    const rows = records
-      .filter(r => r.Email)
-      .map(r => ({
-        email: r.Email.toLowerCase(),
-        event_id,
-        name: r.Name,
-        raw: r,
-        first_seen_at: now,
-        last_seen_at: now
-      }));
+      const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        page.click('text=Export CSV')
+      ]);
 
-    if (rows.length) {
-      await supabase.from('luma_ui_attendees').upsert(rows);
-      console.log(`Upserted ${rows.length} attendees`);
+      const filePath = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
+      await download.saveAs(filePath);
+
+      const csv = fs.readFileSync(filePath);
+      const records = parse(csv, { columns: true });
+
+      const now = new Date().toISOString();
+      const rows = records
+        .filter(r => r.Email)
+        .map(r => ({
+          email: r.Email.toLowerCase(),
+          event_id,
+          name: r.Name,
+          raw: r,
+          first_seen_at: now,
+          last_seen_at: now
+        }));
+
+      if (rows.length) {
+        await supabase.from('luma_ui_attendees').upsert(rows);
+        console.log(`Upserted ${rows.length}`);
+      }
+
+      await page.goto('https://luma.com/user/murray');
+      await page.waitForTimeout(2000);
+
+    } catch (err) {
+      console.log("Error, moving to next card");
+      await page.goto('https://luma.com/user/murray');
     }
   }
 
