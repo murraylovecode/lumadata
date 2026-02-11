@@ -1,4 +1,4 @@
-console.log("Lu.ma attendee bot – exact UI flow");
+console.log("Lu.ma attendee bot – UI faithful FINAL");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -6,12 +6,12 @@ const path = require('path');
 const { chromium } = require('playwright');
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
-if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
+if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
 (async () => {
   const browser = await chromium.launch({
     headless: false,
-    args: ['--no-sandbox']
+    args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
   const context = await browser.newContext({
@@ -21,72 +21,73 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR);
 
   const page = await context.newPage();
 
-  // Step 1 — Open your profile
+  // 🔹 STEP 1 — Open your profile page
   await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
   console.log("Opened profile");
 
-  async function processSection(viewAllButtonSelector, sectionName) {
-    console.log(`\nProcessing ${sectionName}`);
+  // 🔹 STEP 2 — Click "View All" under Hosting
+  const hostingViewAll = page.locator(
+    '#__next div:has-text("Hosting") >> text=View All'
+  ).first();
 
-    await page.click(viewAllButtonSelector);
-    await page.waitForTimeout(3000);
+  await hostingViewAll.click();
+  await page.waitForLoadState('networkidle');
 
-    // Find all event cards by the "By Murray" text
-    const cards = await page.locator('div:has-text("By Murray")').all();
-    console.log(`Found ${cards.length} events`);
+  console.log("Opened Hosting events list");
 
-    for (let i = 0; i < cards.length; i++) {
-      try {
-        console.log(`Opening event ${i + 1}`);
+  // 🔹 STEP 3 — Collect event cards
+  const cards = await page.locator('a[href^="/home?e=evt-"]').all();
+  console.log(`Found ${cards.length} event cards`);
 
-        await cards[i].click();
-        await page.waitForTimeout(2000);
+  // 🔁 LOOP EVENTS
+  for (let i = 0; i < cards.length; i++) {
+    try {
+      console.log(`\nOpening event ${i + 1}`);
 
-        // Popup → click Manage
-        await page.click('text=Manage');
-        await page.waitForLoadState('networkidle');
+      // Click event card → opens popup
+      await cards[i].click();
 
-        // Click Guests tab
-        await page.click('text=Guests');
-        await page.waitForTimeout(2000);
+      // 🧠 CRITICAL — wait for popup Manage link
+      await page.waitForSelector('a:has-text("Manage")', { timeout: 15000 });
 
-        // Click Download as CSV
-        const [download] = await Promise.all([
-          page.waitForEvent('download'),
-          page.click('text=Download as CSV')
-        ]);
+      // Click Manage inside popup
+      await page.click('a:has-text("Manage")');
+      await page.waitForLoadState('networkidle');
 
-        const filePath = path.join(DOWNLOAD_DIR, `event-${Date.now()}.csv`);
-        await download.saveAs(filePath);
+      console.log("Opened Manage page");
 
-        console.log("Downloaded:", filePath);
+      // 🔹 Guests tab
+      await page.click('text=Guests');
+      await page.waitForSelector('text=Download as CSV');
 
-        await page.goBack();
-        await page.goBack();
-        await page.waitForTimeout(2000);
+      console.log("On Guests tab");
 
-      } catch (err) {
-        console.log("Error on this event, moving on");
-        await page.goBack().catch(()=>{});
-      }
+      // 🔹 Download CSV
+      const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        page.click('text=Download as CSV')
+      ]);
+
+      const filePath = path.join(DOWNLOAD_DIR, `event-${Date.now()}.csv`);
+      await download.saveAs(filePath);
+
+      console.log("Downloaded:", filePath);
+
+      // Go back to events list
+      await page.goBack(); // back to popup
+      await page.goBack(); // back to list
+      await page.waitForTimeout(2000);
+
+    } catch (err) {
+      console.log("Error on this event, moving on");
+
+      // Return to hosting list if popup got stuck
+      await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+      await hostingViewAll.click();
+      await page.waitForTimeout(2000);
     }
-
-    await page.goto('https://luma.com/user/murray');
-    await page.waitForTimeout(2000);
   }
 
-  // Hosting → View All
-  await processSection(
-    '#__next > div > div.jsx-114924862.jsx-2149634693.page-content.sticky-topnav > div > div:nth-child(2) > div:nth-child(1) > div.jsx-55dd68548432feb0.mb-1.flex-baseline.spread.gap-2 > button',
-    'Hosting'
-  );
-
-  // Past Events → View All
-  await processSection(
-    '#__next > div > div.jsx-114924862.jsx-2149634693.page-content.sticky-topnav > div > div:nth-child(2) > div:nth-child(2) > div.jsx-55dd68548432feb0.mb-1.flex-baseline.spread.gap-2 > button',
-    'Past Events'
-  );
-
-  console.log("All done");
+  console.log("\nAll done");
   await browser.close();
 })();
