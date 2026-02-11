@@ -16,11 +16,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
     process.env.SUPABASE_SERVICE_KEY
   );
 
-  const browser = await chromium.launch({
-    headless: false,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-
+  const browser = await chromium.launch({ headless: false });
   const context = await browser.newContext({
     storageState: 'storageState.json',
     acceptDownloads: true,
@@ -28,84 +24,100 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  await page.goto('https://lu.ma/home/calendars', { waitUntil: 'networkidle' });
-  await page.waitForSelector('a[href^="/calendar/manage/"]');
+  // ✅ STEP 1 — Open your hosted events page
+  await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+  console.log("Opened hosted events page");
 
-  const calendarLinks = await page.$$eval(
-    'a[href^="/calendar/manage/"]',
-    els => [...new Set(els.map(e => e.getAttribute('href')))]
-  );
+  // Scroll to load all events
+  await page.evaluate(async () => {
+    await new Promise((resolve) => {
+      let total = 0;
+      const step = 500;
+      const t = setInterval(() => {
+        window.scrollBy(0, step);
+        total += step;
+        if (total > document.body.scrollHeight) {
+          clearInterval(t);
+          resolve();
+        }
+      }, 300);
+    });
+  });
 
-  for (const calHref of calendarLinks) {
-    const calUrl = new URL(calHref, 'https://lu.ma').toString();
-    await page.goto(calUrl, { waitUntil: 'networkidle' });
+  // ✅ Grab all event cards
+  const eventCards = await page.$$('[data-testid="event-card"]');
+  console.log(`Found ${eventCards.length} hosted events`);
 
-    const eventLinks = await page.$$eval(
-      'a[href^="/event/manage/evt-"]',
-      els => [...new Set(els.map(e => e.getAttribute('href')))]
-    );
+  for (let i = 0; i < eventCards.length; i++) {
+    console.log(`\nOpening event card ${i + 1}`);
 
-    for (const evtHref of eventLinks) {
-      const eventUrl = new URL(evtHref, 'https://lu.ma').toString();
-      const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
+    const cards = await page.$$('[data-testid="event-card"]');
+    await cards[i].click();
 
-      console.log("Opening event:", eventUrl);
-      await page.goto(eventUrl, { waitUntil: 'networkidle' });
+    // Wait for popup
+    await page.waitForSelector('text=Manage', { timeout: 30000 });
 
-      // 🔴 THIS IS THE KEY STEP YOU WERE MISSING
-      console.log("Opening Guests drawer...");
-      await page.locator('text=/\\d+ Guests/').first().click();
+    // Click Manage
+    await page.click('text=Manage');
 
-      await page.waitForSelector('text=All Guests');
+    // Now on real manage page
+    await page.waitForLoadState('networkidle');
 
-      console.log("Exporting CSV...");
+    const eventUrl = page.url();
+    const event_id = eventUrl.match(/evt-[^/?#]+/i)?.[0];
 
-      await page.click('text=Export');
+    console.log("Manage page:", eventUrl);
 
-      const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 60000 }),
-        page.click('text=Export CSV')
-      ]);
+    // ✅ Find Guests card and Export CSV
+    await page.waitForSelector('text=All Guests', { timeout: 60000 });
 
-      const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
-      await download.saveAs(file);
-      console.log("Downloaded:", file);
+    const guestsCard = page.locator('text=All Guests').locator('..').locator('..');
 
-      // Parse CSV
-      const csv = fs.readFileSync(file, 'utf8');
-      const records = parse(csv, { columns: true, skip_empty_lines: true });
+    await guestsCard.locator('text=Export').click();
 
-      const now = new Date().toISOString();
-      const rows = [];
+    const [download] = await Promise.all([
+      page.waitForEvent('download'),
+      guestsCard.locator('text=Export CSV').click()
+    ]);
 
-      for (const r of records) {
-        if (!r.Email) continue;
+    const file = path.join(DOWNLOAD_DIR, `${event_id}.csv`);
+    await download.saveAs(file);
+    console.log("Downloaded:", file);
 
-        rows.push({
-          email: r.Email.toLowerCase(),
-          event_id,
-          event_name: event_id,
-          name: r.Name || null,
-          ticket_type: r['Ticket Type'] || null,
-          status: r.Status || null,
-          registered_at: r['Registered At']
-            ? new Date(r['Registered At']).toISOString()
-            : null,
-          raw: r,
-          enriched: null,
-          first_seen_at: now,
-          last_seen_at: now,
-        });
-      }
+    // Parse CSV
+    const csv = fs.readFileSync(file, 'utf8');
+    const records = parse(csv, { columns: true, skip_empty_lines: true });
 
-      if (rows.length) {
-        await supabase.from('luma_ui_attendees').upsert(rows);
-        console.log(`Upserted ${rows.length} attendees`);
-      }
+    const event_name = await page.locator('h1').innerText();
+    const now = new Date().toISOString();
 
-      await page.keyboard.press('Escape'); // close drawer
+    const rows = records
+      .filter(r => r.Email)
+      .map(r => ({
+        email: r.Email.toLowerCase(),
+        event_id,
+        event_name,
+        name: r.Name || null,
+        ticket_type: r['Ticket Type'] || null,
+        status: r.Status || null,
+        registered_at: r['Registered At']
+          ? new Date(r['Registered At']).toISOString()
+          : null,
+        raw: r,
+        enriched: null,
+        first_seen_at: now,
+        last_seen_at: now,
+      }));
+
+    if (rows.length) {
+      await supabase.from('luma_ui_attendees').upsert(rows);
+      console.log(`Upserted ${rows.length} attendees`);
     }
+
+    // Go back to hosted events page
+    await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
   }
 
   await browser.close();
+  console.log("All done");
 })();
