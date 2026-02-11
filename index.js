@@ -1,16 +1,21 @@
-console.log("Lu.ma CSV downloader — UI only");
+console.log("Lu.ma CSV downloader — stable UI flow");
 
 require('dotenv').config();
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 const { chromium } = require('playwright');
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
+async function safeClick(locator) {
+  await locator.waitFor({ state: 'visible', timeout: 60000 });
+  await locator.click({ timeout: 60000 });
+}
+
 (async () => {
   const browser = await chromium.launch({
-    headless: true,
+    headless: false,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
@@ -21,67 +26,72 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
 
   const page = await context.newPage();
 
-  // Open your profile
-  await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+  // Open profile
+  await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
   console.log("Opened profile");
 
   async function processSection(sectionIndex) {
-    // 0 = Hosting, 1 = Past Events
-    const viewAll = page.getByRole('button', { name: 'View All' });
-    await viewAll.nth(sectionIndex).click();
+    console.log(`Processing section ${sectionIndex === 0 ? 'Hosting' : 'Past Events'}`);
 
-    await page.waitForSelector('a[href^="/home?e=evt-"]');
+    // Click correct "View All"
+    const viewAll = page.locator('text=View All').nth(sectionIndex);
+    await safeClick(viewAll);
 
-    const cards = await page.locator('a[href^="/home?e=evt-"]').all();
-    console.log(`Found ${cards.length} events`);
+    // Wait for event cards to appear
+    await page.locator('text=By ').first().waitFor({ timeout: 60000 });
 
-    for (let i = 0; i < cards.length; i++) {
+    let eventCount = await page.locator('text=By ').count();
+    console.log(`Found ${eventCount} events`);
+
+    for (let i = 0; i < eventCount; i++) {
+      console.log(`Event ${i + 1}/${eventCount}`);
+
       try {
-        console.log(`Opening event ${i + 1}/${cards.length}`);
+        // Always re-query cards (DOM refreshes)
+        const card = page.locator('text=By ').nth(i);
+        await safeClick(card);
 
-        // Open popup
-        await cards[i].click();
+        // Wait for popup Manage button
+        const manageBtn = page.locator('text=Manage');
+        await safeClick(manageBtn);
 
-        // Click Manage in popup
-        await page.getByText('Manage', { exact: true }).click();
+        // Guests tab
+        const guestsTab = page.locator('text=Guests');
+        await safeClick(guestsTab);
 
-        await page.waitForSelector('text=Guests');
+        // Wait for CSV button to exist
+        const csvBtn = page.locator('text=Download as CSV');
+        await csvBtn.waitFor({ timeout: 60000 });
 
-        // Go to Guests tab
-        await page.getByText('Guests', { exact: true }).click();
-
-        // Download CSV
         const [download] = await Promise.all([
           page.waitForEvent('download', { timeout: 60000 }),
-          page.getByText('Download as CSV', { exact: true }).click()
+          csvBtn.click()
         ]);
 
-        const eventUrl = page.url();
-        const eventId = eventUrl.match(/evt-[^/?#]+/i)?.[0] || Date.now();
+        const file = path.join(DOWNLOAD_DIR, `event-${Date.now()}.csv`);
+        await download.saveAs(file);
+        console.log("Downloaded:", file);
 
-        const filePath = path.join(DOWNLOAD_DIR, `${eventId}.csv`);
-        await download.saveAs(filePath);
+        // Go back to profile
+        await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
 
-        console.log("Downloaded:", filePath);
+        // Re-enter section
+        await safeClick(page.locator('text=View All').nth(sectionIndex));
+        await page.locator('text=By ').first().waitFor({ timeout: 60000 });
 
-        // Go back to profile for next event
-        await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
-        await page.getByRole('button', { name: 'View All' }).nth(sectionIndex).click();
-        await page.waitForSelector('a[href^="/home?e=evt-"]');
+      } catch (err) {
+        console.log("Skipping problematic event");
 
-      } catch (e) {
-        console.log("Skipping event due to error:", e.message);
-        await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+        await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
+        await safeClick(page.locator('text=View All').nth(sectionIndex));
+        await page.locator('text=By ').first().waitFor({ timeout: 60000 });
       }
     }
   }
 
-  // Hosting
-  await processSection(0);
+  await processSection(0); // Hosting
+  await processSection(1); // Past Events
 
-  // Past Events
-  await processSection(1);
-
-  console.log("All CSVs downloaded");
+  console.log("All done");
   await browser.close();
 })();
