@@ -2,10 +2,10 @@
   "cookies": [
     {
       "name": "luma.did",
-      "value": "zpjnamhpba61o2qr1tp4z3bidy2uar",
+      "value": "67r90w4ugd1m975w9wxefxydzynalm",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1805177957.28972,
+      "expires": 1805333200.915612,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Strict"
@@ -15,27 +15,27 @@
       "value": "%2Fsignin",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1805177957.289985,
+      "expires": 1805333200.915741,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Strict"
     },
     {
       "name": "__cf_bm",
-      "value": "4fOn4hU1ol.q7s8xp4XJsPIL_TVklUNWkofqb8iu9PE-1770617957-1.0.1.1-pX.a0p6C9MqARGAxO0gnMSH0ZvWhxaDhAi80CDdEHP.dNFcA3TBfQjTXBmzs.rPrRNvZ1_iTlNnzSISC0ODys3x1iBfBFEISSDBP3ygnuks",
+      "value": "DQ8J4AJqdwBywIFEOCnS4aIRylSaExJEQ2.bleslzW4-1770773200-1.0.1.1-BZM2HEacuEBf_1M_NDhyvKL3uSkEI2EVDJBohZ5.xQqVfJk965sd5cljo76jjdqmMT17X9R2DPXx10yE.xpElWVAHTqBmsm5EUTBxk1QXFA",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1770619757.290079,
+      "expires": 1770775000.915757,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
     },
     {
       "name": "luma.auth-session-key",
-      "value": "usr-dPi3Uv7E2ETajqT.8svdna3tzf57nrrjdw2p",
+      "value": "usr-dPi3Uv7E2ETajqT.8oc56guiu0xfenoy7olx",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1775801993.575802,
+      "expires": 1775957223.335419,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Lax"
@@ -47,7 +47,7 @@
       "localStorage": [
         {
           "name": "luma.active-tab-info",
-          "value": "{\"updated\":\"2026-02-09T11:50:17.678+05:30\",\"tabId\":\"0.18428414464324938\"}"
+          "value": "{\"updated\":\"2026-02-11T06:57:07.434+05:30\",\"tabId\":\"0.19246857842953324\"}"
         }
       ]
     }
