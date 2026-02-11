@@ -1,4 +1,4 @@
-console.log("Lu.ma CSV downloader — popup aware");
+console.log("Lu.ma CSV downloader — correct card selector");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -27,26 +27,22 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
   async function processSection(viewAllIndex, name) {
     console.log(`\n=== ${name} ===`);
 
-    // Open the View All popup
+    // Open View All popup
     await page.locator('button:has-text("View All")').nth(viewAllIndex).click();
     await page.waitForTimeout(3000);
 
-    // This is the overlay container
-    const overlay = page.locator('.lux-overlay');
-
-    // Find event cards INSIDE overlay
-    const cards = await overlay.locator('div:has-text("By")').all();
+    // THIS is the key selector
+    const cards = await page.$$(`a[href^="/home?e=evt-"]`);
     console.log(`Found ${cards.length} events`);
 
     for (let i = 0; i < cards.length; i++) {
       console.log(`Opening event ${i + 1}/${cards.length}`);
 
       try {
-        // Click card inside popup
         await cards[i].click();
         await page.waitForTimeout(2000);
 
-        // Click Manage
+        // Manage button in popup
         await page.locator('text=Manage').click();
         await page.waitForLoadState('domcontentloaded');
 
@@ -68,7 +64,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
         await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
         await page.waitForTimeout(2000);
 
-        // Reopen popup for next event
+        // Reopen popup
         await page.locator('button:has-text("View All")').nth(viewAllIndex).click();
         await page.waitForTimeout(3000);
 
@@ -80,14 +76,10 @@ if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true }
       }
     }
 
-    // Close overlay (press ESC)
     await page.keyboard.press('Escape');
   }
 
-  // Hosting section
   await processSection(0, "Hosting");
-
-  // Past Events section
   await processSection(1, "Past Events");
 
   console.log("\nAll done");
