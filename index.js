@@ -1,4 +1,4 @@
-console.log("Lu.ma CSV downloader — correct selector");
+console.log("Lu.ma CSV downloader — exact UI flow, stable selectors");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -8,9 +8,7 @@ const { chromium } = require('playwright');
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
-const PROFILE = 'https://luma.com/user/murray';
-
-async function slowScroll(page) {
+async function autoScroll(page) {
   await page.evaluate(async () => {
     await new Promise((resolve) => {
       let total = 0;
@@ -27,60 +25,73 @@ async function slowScroll(page) {
   });
 }
 
-async function processSection(page, index) {
-  await page.goto(PROFILE, { waitUntil: 'networkidle' });
+async function processSection(page, sectionIndex) {
+  // 0 = Hosting, 1 = Past Events
+  console.log(`\n=== Opening section ${sectionIndex === 0 ? 'Hosting' : 'Past Events'} ===`);
 
-  const viewAll = page.getByText('View All', { exact: true }).nth(index);
-  await viewAll.click();
-  await page.waitForTimeout(1500);
+  // Click the correct "View All"
+  const viewAllBtns = await page.getByRole('button', { name: 'View All' }).all();
+  await viewAllBtns[sectionIndex].click();
 
-  await slowScroll(page);
+  // Wait for popup
+  await page.waitForTimeout(2000);
 
-  const eventLinks = page.locator('a[href^="/home?e=evt-"]');
-  const count = await eventLinks.count();
+  // Scroll to load ALL events
+  await autoScroll(page);
 
-  console.log(`Found ${count} events`);
+  // Collect ALL event links inside popup
+  const eventLinks = await page.$$eval(
+    'a[href*="/home?e=evt-"]',
+    links => [...new Set(links.map(a => a.href))]
+  );
 
-  for (let i = 0; i < count; i++) {
+  console.log(`Found ${eventLinks.length} events`);
+
+  for (const link of eventLinks) {
     try {
-      console.log(`Opening event ${i + 1}/${count}`);
+      const evtId = link.match(/evt-[^&]+/)[0];
+      console.log(`\nProcessing ${evtId}`);
 
-      await eventLinks.nth(i).click();
-      await page.waitForTimeout(1200);
+      // Open popup by visiting link (same as clicking card)
+      await page.goto(link, { waitUntil: 'networkidle' });
 
+      // Click Manage
       await page.getByText('Manage', { exact: true }).click();
       await page.waitForLoadState('networkidle');
 
-      await page.getByText('Guests', { exact: true }).click();
-      await page.waitForTimeout(1000);
+      // Guests tab
+      await page.getByRole('tab', { name: 'Guests' }).click();
+      await page.waitForTimeout(1500);
 
+      // Download CSV
       const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 120000 }),
-        page.getByText('Download as CSV', { exact: true }).click()
+        page.waitForEvent('download'),
+        page.getByText('Download as CSV').click()
       ]);
 
-      const url = page.url();
-      const evt = url.match(/evt-[^/?#]+/i)?.[0] || Date.now();
-      const file = path.join(DOWNLOAD_DIR, `${evt}.csv`);
-      await download.saveAs(file);
+      const filePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
+      await download.saveAs(filePath);
 
-      console.log("Downloaded:", file);
+      console.log(`Downloaded CSV for ${evtId}`);
 
-      await page.goBack(); // back to popup list
-      await page.waitForTimeout(1000);
-    } catch (e) {
-      console.log("Skipping event:", e.message);
-      await page.goto(PROFILE);
+      // Go back to popup list
+      await page.goBack();
+      await page.waitForTimeout(1500);
+
+    } catch (err) {
+      console.log(`Skipping ${link} — ${err.message}`);
     }
   }
 
+  // Close popup
   await page.keyboard.press('Escape');
+  await page.waitForTimeout(1000);
 }
 
 (async () => {
   const browser = await chromium.launch({
-    headless: false,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
+    headless: true,
+    args: ['--no-sandbox']
   });
 
   const context = await browser.newContext({
@@ -90,11 +101,16 @@ async function processSection(page, index) {
 
   const page = await context.newPage();
 
-  console.log("Opened profile");
+  // Open profile
+  await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+  console.log("Opened profile page");
 
-  await processSection(page, 0); // Hosting
-  await processSection(page, 1); // Past Events
+  // Hosting
+  await processSection(page, 0);
 
-  console.log("All CSVs downloaded");
+  // Past Events
+  await processSection(page, 1);
+
   await browser.close();
+  console.log("\nAll CSVs downloaded successfully");
 })();
