@@ -1,260 +1,192 @@
-/**
- * index.js
- * - Collect event ids from profile (hosting + past)
- * - Probe one event to capture the real CSV-export URL
- * - Download CSV for every event via direct HTTP requests using browser cookies
- */
+// index.js
+console.log("Lu.ma fast CSV exporter — API-export using Playwright session");
 
+require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
+const https = require('https');
 const { chromium } = require('playwright');
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 
-function uniq(array) {
-  return Array.from(new Set(array));
+function cookieHeaderFromCookies(cookies) {
+  return cookies.map(c => `${c.name}=${c.value}`).join('; ');
 }
 
-async function slowScroll(page) {
-  // small scroll to trigger lazy load
-  await page.evaluate(async () => {
-    await new Promise((resolve) => {
-      let total = 0;
-      const distance = 800;
-      const timer = setInterval(() => {
-        window.scrollBy(0, distance);
-        total += distance;
-        if (total >= document.body.scrollHeight - 10) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 300);
+function downloadToFile(url, headers, destPath, timeoutMs = 60000) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(url);
+    const opts = {
+      hostname: u.hostname,
+      path: u.pathname + u.search,
+      method: 'GET',
+      port: u.port || 443,
+      headers,
+    };
+
+    const req = https.request(opts, (res) => {
+      const status = res.statusCode || 0;
+      if (status >= 400) {
+        // collect body for debug then reject
+        let chunks = [];
+        res.on('data', c => chunks.push(c));
+        res.on('end', () => {
+          const body = Buffer.concat(chunks).toString('utf8').slice(0, 2000);
+          reject(new Error(`Status ${status}; body-preview: ${body}`));
+        });
+        return;
+      }
+
+      // Accept many CSV content-types; also accept octet-stream
+      const contentType = (res.headers['content-type'] || '').toLowerCase();
+      const fileStream = fs.createWriteStream(destPath);
+      res.pipe(fileStream);
+      fileStream.on('finish', () => resolve({ status, contentType }));
+      fileStream.on('error', (err) => reject(err));
     });
+
+    req.on('error', reject);
+    req.setTimeout(timeoutMs, () => {
+      req.destroy(new Error('Request timed out'));
+    });
+    req.end();
   });
 }
 
 (async () => {
-  console.log('Start — Luma CSV bulk downloader (fast path)');
-
-  const browser = await chromium.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-
+  const browser = await chromium.launch({ headless: true, args: ['--no-sandbox'] });
   const context = await browser.newContext({
-    acceptDownloads: true,
-    storageState: 'storageState.json' // must exist (logged-in session)
+    storageState: 'storageState.json'
   });
-
   const page = await context.newPage();
 
+  console.log("Opening profile page...");
+  await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle' });
+
+  // click both "View All" buttons (if present) to cause client to render more cards
   try {
-    // 1) Open profile
-    await page.goto('https://luma.com/user/murray', { waitUntil: 'networkidle', timeout: 60000 });
-    console.log('Opened profile page');
-
-    // utility to open View All for a section index (0=Hosting,1=Past)
-    async function openViewAll(sectionIndex) {
-      // Wait for "View All" buttons to appear, then click the appropriate one
-      await page.waitForSelector('text=View All', { timeout: 30000 });
-      const buttons = await page.getByText('View All', { exact: true }).all();
-      if (!buttons || buttons.length <= sectionIndex) {
-        console.warn(`Could not find View All button for section index ${sectionIndex}`);
-        return false;
-      }
-      await buttons[sectionIndex].click();
-      await page.waitForTimeout(1200);
-      return true;
-    }
-
-    // 2) For both sections, open View All, scroll fully and capture page HTML, extract evt- ids
-    let allEventIds = [];
-
-    for (const [sectionName, idx] of [['Hosting', 0], ['Past Events', 1]]) {
-      console.log(`\nCollecting ids for ${sectionName} (sectionIndex=${idx})`);
-      const ok = await openViewAll(idx);
-      if (!ok) {
-        console.warn(`Skipping ${sectionName} because View All not found`);
-        continue;
-      }
-
-      // ensure lazy loading triggers
-      await slowScroll(page);
-      await page.waitForTimeout(800);
-
-      // read page content and extract event ids (pattern evt-xxx)
-      const html = await page.content();
-      const matches = Array.from(html.matchAll(/evt-[A-Za-z0-9_-]+/g)).map(m => m[0]);
-      const ids = uniq(matches);
-      console.log(`Found ${ids.length} evt ids in ${sectionName}`);
-
-      allEventIds = allEventIds.concat(ids);
-
-      // close the View All popup (escape)
-      await page.keyboard.press('Escape').catch(() => {});
-      await page.waitForTimeout(500);
-    }
-
-    allEventIds = uniq(allEventIds).filter(Boolean);
-    console.log(`\nTotal unique event ids found: ${allEventIds.length}`);
-
-    if (!allEventIds.length) {
-      console.log('No event ids found — exiting.');
-      await browser.close();
-      return;
-    }
-
-    // 3) Probe the real export endpoint using the FIRST event (UI click once)
-    console.log('\nProbing export endpoint using first event (will do one UI export to determine template)...');
-    const probeId = allEventIds[0];
-    let exportUrlTemplate = null;
-
-    try {
-      // navigate to manage page for probe event (host pages are accessible)
-      const manageUrl = `https://luma.com/event/manage/${probeId}`;
-      await page.goto(manageUrl, { waitUntil: 'networkidle', timeout: 60000 });
-      console.log('Opened manage page:', manageUrl);
-
-      // ensure Guests tab available and click
+    const viewAllButtons = await page.getByText('View All', { exact: true }).all();
+    for (let i = 0; i < viewAllButtons.length; i++) {
       try {
-        await page.getByRole('tab', { name: /Guests/i }).click({ timeout: 15000 });
-      } catch {
-        // fallback: click by text
-        await page.getByText('Guests', { exact: true }).click({ timeout: 15000 });
-      }
-      await page.waitForTimeout(800);
-
-      // Wait for "Download as CSV" to be visible (may be loaded lazily)
-      await page.waitForSelector('text=Download as CSV', { timeout: 30000 });
-
-      // Intercept the response triggered by clicking "Download as CSV"
-      let csvResponse = null;
-      const respPromise = page.waitForResponse(r => {
-        const url = r.url();
-        const ct = (r.headers()['content-type'] || '').toLowerCase();
-        // heuristics: url contains "export" or content-type contains csv
-        if (url.toLowerCase().includes('export') || ct.includes('csv')) return true;
-        return false;
-      }, { timeout: 60000 });
-
-      await Promise.all([
-        // click the button that triggers CSV
-        page.getByText('Download as CSV', { exact: true }).click(),
-        respPromise
-      ]).then(([, r]) => {
-        csvResponse = r;
-      });
-
-      if (csvResponse) {
-        const respUrl = csvResponse.url();
-        console.log('Probe export response URL detected:', respUrl);
-
-        // Build template by replacing probeId with {EVENT}
-        if (respUrl.includes(probeId)) {
-          exportUrlTemplate = respUrl.replace(probeId, '{EVENT}');
-          console.log('Export URL template:', exportUrlTemplate);
-        } else {
-          // if probe URL did not contain id, try to find an export URL in request headers
-          exportUrlTemplate = null;
-        }
-      } else {
-        console.warn('No CSV response detected during probe; will try plausible endpoints later');
-      }
-    } catch (err) {
-      console.warn('Probe export step failed (will fallback to sensible templates):', err.message);
-    }
-
-    // 4) Determine cookie header for context.request
-    const cookies = await context.cookies();
-    const cookieHeader = cookies.map(c => `${c.name}=${c.value}`).join('; ');
-    const defaultHeaders = {
-      'accept': 'text/csv,application/csv,*/*;q=0.1',
-      'user-agent': 'Playwright-Luma-CSV-Agent'
-    };
-
-    // 5) Make a list of candidate templates (include discovered one first)
-    const candidates = [];
-    if (exportUrlTemplate) candidates.push(exportUrlTemplate);
-    // Common guesses / fallbacks:
-    candidates.push(
-      // path style 1 (api)
-      `https://luma.com/api/event/{EVENT}/guests/export`,
-      // path style 2 (manage route)
-      `https://luma.com/event/manage/{EVENT}/guests/export`,
-      // path style 3
-      `https://luma.com/event/{EVENT}/guests/export`,
-      // path style 4
-      `https://luma.com/api/v1/event/{EVENT}/guests/export`
-    );
-
-    // Function to try one URL and save CSV
-    async function tryDownloadForEvent(eventId) {
-      // try each candidate template until one works
-      for (const tmpl of candidates) {
-        const url = tmpl.replace('{EVENT}', eventId);
-        try {
-          const resp = await context.request.get(url, {
-            headers: { ...defaultHeaders, cookie: cookieHeader },
-            timeout: 60000
-          });
-          if (resp && resp.ok()) {
-            // get content-type to ensure we have CSV
-            const ct = (resp.headers()['content-type'] || '').toLowerCase();
-            if (ct.includes('csv') || ct.includes('text') || resp.headers()['content-disposition']) {
-              const body = await resp.body();
-              const outPath = path.join(DOWNLOAD_DIR, `${eventId}.csv`);
-              fs.writeFileSync(outPath, body);
-              console.log(`Saved CSV for ${eventId} from ${url} -> ${outPath}`);
-              return true;
-            } else {
-              // maybe the server returns JSON with a redirect or token; try reading text
-              const txt = await resp.text().catch(() => '');
-              if (txt && txt.includes('api_id') && txt.includes('email')) {
-                const outPath = path.join(DOWNLOAD_DIR, `${eventId}.csv`);
-                fs.writeFileSync(outPath, txt);
-                console.log(`Saved CSV-ish response for ${eventId} from ${url} -> ${outPath}`);
-                return true;
-              }
-            }
-          } else {
-            // log non-ok status for debugging
-            // console.log(`Non-ok response for ${url}: ${resp ? resp.status() : 'no response'}`);
-          }
-        } catch (err) {
-          // continue to next candidate
-          // console.debug(`Candidate ${url} failed: ${err.message}`);
-        }
-      }
-      return false;
-    }
-
-    // 6) Download for each event (parallel with small concurrency)
-    const concurrency = 4;
-    let idx = 0;
-    async function worker() {
-      while (idx < allEventIds.length) {
-        const i = idx++;
-        const evt = allEventIds[i];
-        console.log(`\n[${i+1}/${allEventIds.length}] Attempting export for: ${evt}`);
-        const ok = await tryDownloadForEvent(evt);
-        if (!ok) {
-          console.warn(`Failed to download CSV for ${evt} (all templates tried)`);
-        }
+        await viewAllButtons[i].click({ timeout: 5000 });
+        // give client time to render popup contents
+        await page.waitForTimeout(800);
+        // close popup by pressing Escape so second View All not blocked
+        await page.keyboard.press('Escape').catch(() => {});
+        await page.waitForTimeout(400);
+      } catch (e) {
+        // ignore single-click failures
       }
     }
-
-    // start workers
-    const workers = Array.from({ length: Math.min(concurrency, allEventIds.length) }, () => worker());
-    await Promise.all(workers);
-
-    console.log('\nAll events processed (check downloads folder).');
-
-  } finally {
-    await browser.close();
-    console.log('Browser closed.');
+  } catch (e) {
+    // ignore
   }
-})().catch(err => {
-  console.error('Fatal error:', err);
-  process.exit(1);
-});
+
+  // scroll a bit to let lazy content render
+  await page.evaluate(async () => {
+    window.scrollTo({ top: 0 });
+    await new Promise(r => setTimeout(r, 300));
+    const steps = 8;
+    for (let i = 0; i < steps; i++) {
+      window.scrollBy(0, document.body.scrollHeight / steps);
+      // small delay
+      // eslint-disable-next-line no-await-in-loop
+      await new Promise(r => setTimeout(r, 200));
+    }
+    window.scrollTo({ top: 0 });
+  });
+
+  // Grab page HTML and extract evt- IDs
+  const html = await page.content();
+  // match evt- followed by letters/numbers/-,_ (tuned to typical ids)
+  const matches = Array.from(html.matchAll(/evt-[A-Za-z0-9_-]+/g)).map(m => m[0]);
+  const uniqueIds = [...new Set(matches)];
+  if (uniqueIds.length === 0) {
+    console.log("No evt- IDs found on profile page. Trying a broader regex for 'evt' tokens.");
+    // fallback: find tokens like evt\S{6,}
+    const matches2 = Array.from(html.matchAll(/evt-[^\s"'<>{}]+/g)).map(m => m[0]);
+    for (const m of matches2) if (!uniqueIds.includes(m)) uniqueIds.push(m);
+  }
+
+  console.log(`Found ${uniqueIds.length} unique event ids (evt-...)`);
+
+  // Prepare cookie header from Playwright context cookies
+  const cookies = await context.cookies();
+  const cookieHeader = cookieHeaderFromCookies(cookies);
+  const headers = {
+    'Cookie': cookieHeader,
+    'User-Agent': 'Mozilla/5.0 (Playwright script)',
+    'Accept': '*/*',
+    'Referer': 'https://luma.com/user/murray'
+  };
+
+  // endpoints to try (ordered). We'll try common variants.
+  function endpointsForEvent(ev) {
+    return [
+      // common pattern we observed / suggested
+      `https://luma.com/api/event/${ev}/guests/export`,
+      `https://luma.com/api/events/${ev}/guests/export`,
+      // manage path (sometimes servers handle same route)
+      `https://luma.com/event/manage/${ev}/guests/export`,
+      `https://luma.com/event/manage/${ev}/guests/csv`,
+      `https://luma.com/event/manage/${ev}/guests/download`,
+      // fallback: event path used by UI to download
+      `https://luma.com/event/${ev}/guests/export`,
+      // last-ditch: query param style
+      `https://luma.com/home?e=${ev}&export=guests`
+    ];
+  }
+
+  for (const ev of uniqueIds) {
+    const eventId = ev;
+    const tryUrls = endpointsForEvent(eventId);
+    let saved = false;
+
+    for (const url of tryUrls) {
+      const dest = path.join(DOWNLOAD_DIR, `${eventId}.csv`);
+      try {
+        console.log(`Trying ${url} ...`);
+        const result = await downloadToFile(url, headers, dest, 30000).catch(err => { throw err; });
+        // quick sanity: ensure file size > 0 and content-type indicates csv or plain text
+        const stats = fs.statSync(dest);
+        if (stats.size > 10) {
+          const ct = (result.contentType || '').toLowerCase();
+          if (ct.includes('csv') || ct.includes('text') || ct.includes('octet-stream') || dest.endsWith('.csv')) {
+            console.log(`Saved CSV for ${eventId} from ${url} (${stats.size} bytes, content-type=${result.contentType})`);
+            saved = true;
+            break;
+          } else {
+            // If content-type is unexpected, still accept if file appears like CSV
+            const sample = fs.readFileSync(dest, 'utf8', { encoding: 'utf8' }).slice(0, 200);
+            if (sample.includes('api_id') || sample.includes('email') || sample.includes('name') || sample.includes(',')) {
+              console.log(`Saved CSV-like file for ${eventId} from ${url} (heuristic match)`);
+              saved = true;
+              break;
+            } else {
+              // not CSV — remove and continue trying
+              fs.unlinkSync(dest);
+              console.log(`Downloaded file not CSV-like (content-type=${result.contentType}). Trying next endpoint.`);
+            }
+          }
+        } else {
+          // empty; remove and continue
+          if (fs.existsSync(dest)) fs.unlinkSync(dest);
+          console.log(`Downloaded zero-byte response from ${url}.`);
+        }
+      } catch (err) {
+        // log and try next
+        console.log(`Failed ${url}: ${err.message ? err.message : err}`);
+        // remove partially written file if any
+        try { if (fs.existsSync(path.join(DOWNLOAD_DIR, `${eventId}.csv`))) fs.unlinkSync(path.join(DOWNLOAD_DIR, `${eventId}.csv`)); } catch (_) {}
+      }
+    } // end tryUrls loop
+
+    if (!saved) {
+      console.log(`Could not export CSV for ${eventId} (all endpoints failed).`);
+    }
+  } // end events loop
+
+  await browser.close();
+  console.log("Done — CSV export attempts complete.");
+})();
