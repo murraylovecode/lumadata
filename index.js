@@ -1,4 +1,4 @@
-console.log("Lu.ma CSV downloader — stable UI flow");
+console.log("Lu.ma CSV downloader — popup aware");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -7,11 +7,6 @@ const { chromium } = require('playwright');
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
-
-async function safeClick(locator) {
-  await locator.waitFor({ state: 'visible', timeout: 60000 });
-  await locator.click({ timeout: 60000 });
-}
 
 (async () => {
   const browser = await chromium.launch({
@@ -26,46 +21,43 @@ async function safeClick(locator) {
 
   const page = await context.newPage();
 
-  // Open profile
   await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
   console.log("Opened profile");
 
-  async function processSection(sectionIndex) {
-    console.log(`Processing section ${sectionIndex === 0 ? 'Hosting' : 'Past Events'}`);
+  async function processSection(viewAllIndex, name) {
+    console.log(`\n=== ${name} ===`);
 
-    // Click correct "View All"
-    const viewAll = page.locator('text=View All').nth(sectionIndex);
-    await safeClick(viewAll);
+    // Open the View All popup
+    await page.locator('button:has-text("View All")').nth(viewAllIndex).click();
+    await page.waitForTimeout(3000);
 
-    // Wait for event cards to appear
-    await page.locator('text=By ').first().waitFor({ timeout: 60000 });
+    // This is the overlay container
+    const overlay = page.locator('.lux-overlay');
 
-    let eventCount = await page.locator('text=By ').count();
-    console.log(`Found ${eventCount} events`);
+    // Find event cards INSIDE overlay
+    const cards = await overlay.locator('div:has-text("By")').all();
+    console.log(`Found ${cards.length} events`);
 
-    for (let i = 0; i < eventCount; i++) {
-      console.log(`Event ${i + 1}/${eventCount}`);
+    for (let i = 0; i < cards.length; i++) {
+      console.log(`Opening event ${i + 1}/${cards.length}`);
 
       try {
-        // Always re-query cards (DOM refreshes)
-        const card = page.locator('text=By ').nth(i);
-        await safeClick(card);
+        // Click card inside popup
+        await cards[i].click();
+        await page.waitForTimeout(2000);
 
-        // Wait for popup Manage button
-        const manageBtn = page.locator('text=Manage');
-        await safeClick(manageBtn);
+        // Click Manage
+        await page.locator('text=Manage').click();
+        await page.waitForLoadState('domcontentloaded');
 
         // Guests tab
-        const guestsTab = page.locator('text=Guests');
-        await safeClick(guestsTab);
+        await page.locator('text=Guests').click();
+        await page.waitForTimeout(2000);
 
-        // Wait for CSV button to exist
-        const csvBtn = page.locator('text=Download as CSV');
-        await csvBtn.waitFor({ timeout: 60000 });
-
+        // Download CSV
         const [download] = await Promise.all([
           page.waitForEvent('download', { timeout: 60000 }),
-          csvBtn.click()
+          page.locator('text=Download as CSV').click()
         ]);
 
         const file = path.join(DOWNLOAD_DIR, `event-${Date.now()}.csv`);
@@ -74,24 +66,30 @@ async function safeClick(locator) {
 
         // Go back to profile
         await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
+        await page.waitForTimeout(2000);
 
-        // Re-enter section
-        await safeClick(page.locator('text=View All').nth(sectionIndex));
-        await page.locator('text=By ').first().waitFor({ timeout: 60000 });
+        // Reopen popup for next event
+        await page.locator('button:has-text("View All")').nth(viewAllIndex).click();
+        await page.waitForTimeout(3000);
 
       } catch (err) {
-        console.log("Skipping problematic event");
-
+        console.log("Error, moving on");
         await page.goto('https://luma.com/user/murray', { waitUntil: 'domcontentloaded' });
-        await safeClick(page.locator('text=View All').nth(sectionIndex));
-        await page.locator('text=By ').first().waitFor({ timeout: 60000 });
+        await page.locator('button:has-text("View All")').nth(viewAllIndex).click();
+        await page.waitForTimeout(3000);
       }
     }
+
+    // Close overlay (press ESC)
+    await page.keyboard.press('Escape');
   }
 
-  await processSection(0); // Hosting
-  await processSection(1); // Past Events
+  // Hosting section
+  await processSection(0, "Hosting");
 
-  console.log("All done");
+  // Past Events section
+  await processSection(1, "Past Events");
+
+  console.log("\nAll done");
   await browser.close();
 })();
