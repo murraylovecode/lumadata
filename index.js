@@ -37,7 +37,7 @@ async function processSection(page, sectionIndex) {
 
   await autoScroll(page);
 
-  const cards = page.locator('div:has-text("By ")');
+  const cards = page.locator('a[href^="/event/manage/evt-');
   const total = await cards.count();
 
   console.log(`Found ${total} event cards`);
@@ -48,8 +48,9 @@ async function processSection(page, sectionIndex) {
     try {
       const card = cards.nth(i);
       await card.scrollIntoViewIfNeeded();
-      await card.click({ force: true });
-
+      aconst card = cards.nth(i);
+      await card.click();
+      
       // Wait for Manage button in popup
       const manageBtn = page.getByText('Manage', { exact: true });
       await manageBtn.waitFor({ timeout: 5000 });
