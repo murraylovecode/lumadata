@@ -1,4 +1,4 @@
-console.log("Lu.ma CSV downloader — direct evt extraction");
+console.log("Lu.ma Event ID Extractor & CSV Downloader");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -10,22 +10,9 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
 
-async function autoScroll(page) {
-  let previousHeight = 0;
-
-  while (true) {
-    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
-    if (currentHeight === previousHeight) break;
-
-    previousHeight = currentHeight;
-    await page.mouse.wheel(0, 5000);
-    await page.waitForTimeout(1000);
-  }
-}
-
 (async () => {
   const browser = await chromium.launch({
-    headless: true,
+    headless: true, // Set to false if you want to see the browser
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
@@ -37,22 +24,75 @@ async function autoScroll(page) {
   const page = await context.newPage();
 
   // 1️⃣ Open profile page
-  await page.goto('https://luma.com/user/murray', {
+  console.log("Opening profile...");
+  await page.goto('https://lu.ma/user/murray', {
     waitUntil: 'networkidle'
   });
 
-  console.log("Opened profile");
+  // Verify login status (optional but helpful)
+  const isLoggedIn = await page.evaluate(() => !!document.querySelector('.user-avatar') || !!document.querySelector('.avatar-wrapper'));
+  console.log("Is logged in (estimated):", isLoggedIn);
 
-  // 2️⃣ Scroll fully to load Hosting + Past Events
-  await autoScroll(page);
+  async function extractIdsFromModal() {
+    // Wait for modal to appear and load content
+    await page.waitForTimeout(2000);
 
-  // 3️⃣ Extract all evt IDs from page HTML
-  const html = await page.content();
+    // Scroll modal logic if needed
+    await page.evaluate(async () => {
+      const modal = document.querySelector('.lux-modal-body');
+      if (modal) {
+        let lastHeight = modal.scrollHeight;
+        for (let i = 0; i < 5; i++) {
+          modal.scrollTop = modal.scrollHeight;
+          await new Promise(r => setTimeout(r, 1000));
+          if (modal.scrollHeight === lastHeight) break;
+          lastHeight = modal.scrollHeight;
+        }
+      }
+    });
 
-  const evtMatches = html.match(/evt-[A-Za-z0-9]+/g) || [];
-  const uniqueEvtIds = [...new Set(evtMatches)];
+    const content = await page.content();
+    const matches = content.match(/evt-[A-Za-z0-9]+/g) || [];
 
-  console.log("Total unique events found:", uniqueEvtIds.length);
+    // Close modal
+    const closeButton = page.locator('.lux-modal-close, .close-button').first();
+    if (await closeButton.isVisible()) {
+      await closeButton.click();
+      await page.waitForTimeout(1000);
+    } else {
+      // Press Escape as fallback
+      await page.keyboard.press('Escape');
+    }
+
+    return matches;
+  }
+
+  const allEvtIds = new Set();
+
+  // Find all "View All" buttons
+  const viewAllButtons = page.getByText('View All');
+  const count = await viewAllButtons.count();
+  console.log(`Found ${count} "View All" buttons.`);
+
+  for (let i = 0; i < count; i++) {
+    const btn = viewAllButtons.nth(i);
+    try {
+      console.log(`Clicking "View All" button #${i + 1}...`);
+      await btn.click();
+      const ids = await extractIdsFromModal();
+      ids.forEach(id => allEvtIds.add(id));
+      console.log(`Updated unique IDs count: ${allEvtIds.size}`);
+    } catch (err) {
+      console.log(`Error processing "View All" button #${i + 1}: ${err.message}`);
+    }
+  }
+
+  // Also extract IDs from the main page directly (in case some are visible)
+  const mainPageIds = (await page.content()).match(/evt-[A-Za-z0-9]+/g) || [];
+  mainPageIds.forEach(id => allEvtIds.add(id));
+
+  const uniqueEvtIds = [...allEvtIds];
+  console.log(`Total unique events found: ${uniqueEvtIds.length}`);
 
   if (uniqueEvtIds.length === 0) {
     console.log("No events found. Exiting.");
@@ -60,38 +100,50 @@ async function autoScroll(page) {
     return;
   }
 
-  // 4️⃣ Loop through each event ID
+  // 3️⃣ Loop through each event ID and download CSV
   for (let i = 0; i < uniqueEvtIds.length; i++) {
     const evtId = uniqueEvtIds[i];
+    const guestsUrl = `https://luma.com/event/manage/${evtId}/guests`;
 
-    console.log(`\nProcessing ${i + 1}/${uniqueEvtIds.length}: ${evtId}`);
+    console.log(`\n[${i + 1}/${uniqueEvtIds.length}] Processing: ${evtId}`);
 
     try {
-      const guestsUrl = `https://luma.com/event/manage/${evtId}/guests`;
-
       await page.goto(guestsUrl, {
-        waitUntil: 'networkidle'
+        waitUntil: 'networkidle',
+        timeout: 30000
       });
 
-      // Wait for Download button
+      console.log(`Page title: ${await page.title()}`);
+
       const downloadButton = page.getByText('Download as CSV', { exact: true });
-      await downloadButton.waitFor({ timeout: 10000 });
 
-      const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 15000 }),
-        downloadButton.click()
-      ]);
+      // Wait for it to be visible or at least present
+      await downloadButton.waitFor({ state: 'visible', timeout: 5000 }).catch(() => null);
 
-      const filePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
-      await download.saveAs(filePath);
+      if (await downloadButton.isVisible()) {
+        console.log("Found download button. Clicking...");
 
-      console.log("Downloaded:", filePath);
+        try {
+          const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 15000 }),
+            downloadButton.click()
+          ]);
+
+          const filePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
+          await download.saveAs(filePath);
+          console.log(`✅ Saved: ${filePath}`);
+        } catch (downloadErr) {
+          console.log(`❌ Download failed for ${evtId}: ${downloadErr.message}`);
+        }
+      } else {
+        console.log(`⚠️ Download button not found for ${evtId}. Access might be restricted or no guests.`);
+      }
 
     } catch (err) {
-      console.log("Skipping (no permission or no guests):", evtId);
+      console.log(`❌ Error visiting ${evtId}: ${err.message}`);
     }
   }
 
-  console.log("\nAll events processed");
+  console.log("\nAll events processed.");
   await browser.close();
 })();
