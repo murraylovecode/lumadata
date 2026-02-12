@@ -48,7 +48,7 @@ async function processSection(page, sectionIndex) {
     try {
       const card = cards.nth(i);
       await card.scrollIntoViewIfNeeded();
-      aconst card = cards.nth(i);
+      const card = cards.nth(i);
       await card.click();
       
       // Wait for Manage button in popup
