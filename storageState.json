@@ -1,21 +1,11 @@
 {
   "cookies": [
     {
-      "name": "luma.native-referrer",
-      "value": "https%3A%2F%2Fluma.com%2Fuser%2Fmurray%3Fe%3Devt-TVW4g4R3zCKN3BL",
-      "domain": ".luma.com",
-      "path": "/event/manage",
-      "expires": 1805335082.137215,
-      "httpOnly": true,
-      "secure": true,
-      "sameSite": "Strict"
-    },
-    {
       "name": "luma.did",
-      "value": "66vudes4rm4bulrgl69ycensuszh7t",
+      "value": "wxr18pe2tvim4nuxcicf485x3iukvs",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1805335012.91403,
+      "expires": 1805494382.199927,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Strict"
@@ -25,27 +15,27 @@
       "value": "%2Fsignin",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1805335012.914233,
+      "expires": 1805494382.204789,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Strict"
     },
     {
       "name": "__cf_bm",
-      "value": "mG2p9ppYVtDS_vUxWxjL8ZtSaeO0f.5ICkaxadMXNXY-1770775012-1.0.1.1-2JCwBhX2LmNj9NkK0l7twHmuG6Q.z4wMsK8kNG079f26RlmMGKSEdknnCRiFLcFFLsiCCmhvVqEfMhQuPSayFGo25YiqD1.74Yh.gTqVGKY",
+      "value": "h8IlJvvcc20w3nrAtwbCTrs6AOVTMWG.xJ8qS6nfQSc-1770934382-1.0.1.1-WXmz5a1xtereB3bRar8DYwXpIl7UTl0j_6nckYWuso4.QDwR7b5ckkw9_ZznsC7DFjlmoSRclJb15aCgcIszaVZ5qS9vG4uk.6PYpDWzxOA",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1770776812.914265,
+      "expires": 1770936182.204831,
       "httpOnly": true,
       "secure": true,
       "sameSite": "None"
     },
     {
       "name": "luma.auth-session-key",
-      "value": "usr-dPi3Uv7E2ETajqT.0b9u60we37794rnlpuwr",
+      "value": "usr-dPi3Uv7E2ETajqT.8tn2z1xilwtfpt7u1x0h",
       "domain": ".luma.com",
       "path": "/",
-      "expires": 1775959055.617882,
+      "expires": 1776118405.830186,
       "httpOnly": true,
       "secure": true,
       "sameSite": "Lax"
@@ -57,7 +47,7 @@
       "localStorage": [
         {
           "name": "luma.active-tab-info",
-          "value": "{\"updated\":\"2026-02-11T07:28:57.726+05:30\",\"tabId\":\"0.7369069330956405\"}"
+          "value": "{\"updated\":\"2026-02-13T03:43:30.943+05:30\",\"tabId\":\"0.6911886612980485\"}"
         }
       ]
     }
