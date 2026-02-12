@@ -5,6 +5,9 @@ on:
     - cron: '0 0 * * 0' # Runs at 00:00 every Sunday
   workflow_dispatch: # Allows manual trigger
 
+permissions:
+  contents: write
+
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -15,9 +18,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '18'
+          node-version: '20'
 
       - name: Install dependencies
+        # Force install all dependencies based on package.json if lockfile is missing or weird
         run: npm install
 
       - name: Install Playwright Browsers
@@ -27,9 +31,12 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Assuming you use a secure way to inject storageState or handle login
-          # For headless auth, you might need to inject cookies via env vars and write to storageState.json
+          # Need to provide storageState via secret or other means
+          # For example, using a base64 encoded string and decoding it:
+          # STORAGE_STATE_B64: ${{ secrets.STORAGE_STATE_B64 }}
         run: |
            # Create storageState.json from secret if available
            # echo '${{ secrets.LUMA_STORAGE_STATE }}' > storageState.json
+           # Or expecting storageState.json committed (less secure, but possible)
+           
            xvfb-run --auto-servernum node index.js
