@@ -5,9 +5,6 @@ on:
     - cron: '0 0 * * 0' # Runs at 00:00 every Sunday
   workflow_dispatch: # Allows manual trigger
 
-permissions:
-  contents: write
-
 jobs:
   sync:
     runs-on: ubuntu-latest
@@ -18,10 +15,10 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: '20'
+          node-version: '18'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       - name: Install Playwright Browsers
         run: npx playwright install --with-deps chromium
@@ -30,13 +27,9 @@ jobs:
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
-          # Need to provide storageState via secret or other means
-          # For example, using a base64 encoded string and decoding it:
-          # STORAGE_STATE_B64: ${{ secrets.STORAGE_STATE_B64 }}
+          # Assuming you use a secure way to inject storageState or handle login
+          # For headless auth, you might need to inject cookies via env vars and write to storageState.json
         run: |
-           # If using base64 storageState secret (recommended for GH actions):
-           # echo $STORAGE_STATE_B64 | base64 -d > storageState.json
-           
-           # Or expecting storageState.json committed (less secure, but possible)
-           
+           # Create storageState.json from secret if available
+           # echo '${{ secrets.LUMA_STORAGE_STATE }}' > storageState.json
            xvfb-run --auto-servernum node index.js
