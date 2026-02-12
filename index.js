@@ -1,66 +1,115 @@
-console.log("Lu.ma — Extract all hosted events (stable)");
+console.log("Lu.ma CSV downloader — stable UI flow");
 
 require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
 const { chromium } = require('playwright');
 
-async function scrollFully(page) {
-  await page.evaluate(async () => {
-    await new Promise((resolve) => {
-      let totalHeight = 0;
-      const distance = 800;
-      const timer = setInterval(() => {
-        window.scrollBy(0, distance);
-        totalHeight += distance;
-
-        if (totalHeight >= document.body.scrollHeight) {
-          clearInterval(timer);
-          resolve();
-        }
-      }, 300);
-    });
-  });
+const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
+if (!fs.existsSync(DOWNLOAD_DIR)) {
+  fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
 }
 
-async function collectEventsFromSection(page, sectionIndex) {
-  console.log(`\nProcessing section index ${sectionIndex} (0=Hosting, 1=Past)`);
+async function autoScroll(page) {
+  let previous = 0;
 
-  // Click correct "View All"
+  while (true) {
+    const current = await page.locator('div:has-text("By ")').count();
+    if (current === previous) break;
+
+    previous = current;
+    await page.mouse.wheel(0, 5000);
+    await page.waitForTimeout(1000);
+  }
+}
+
+async function processSection(page, sectionIndex) {
+  console.log(`\n=== Processing section ${sectionIndex} (0=Hosting,1=Past) ===`);
+
   const viewAllButtons = await page.getByText('View All', { exact: true }).all();
+  if (!viewAllButtons[sectionIndex]) {
+    console.log("View All button not found");
+    return;
+  }
+
   await viewAllButtons[sectionIndex].click();
-
   await page.waitForTimeout(2000);
-  await scrollFully(page);
 
-  // Extract event ids from popup links
-  const eventIds = await page.evaluate(() => {
-    const links = Array.from(document.querySelectorAll('a[href*="evt-"]'));
-    const ids = links
-      .map(a => {
-        const match = a.href.match(/evt-[A-Za-z0-9]+/);
-        return match ? match[0] : null;
-      })
-      .filter(Boolean);
+  await autoScroll(page);
 
-    return [...new Set(ids)];
-  });
+  const cards = page.locator('div:has-text("By ")');
+  const total = await cards.count();
 
-  console.log(`Found ${eventIds.length} events in section ${sectionIndex}`);
+  console.log(`Found ${total} event cards`);
+
+  for (let i = 0; i < total; i++) {
+    console.log(`\nOpening card ${i + 1}/${total}`);
+
+    try {
+      const card = cards.nth(i);
+      await card.scrollIntoViewIfNeeded();
+      await card.click({ force: true });
+
+      // Wait for Manage button in popup
+      const manageBtn = page.getByText('Manage', { exact: true });
+      await manageBtn.waitFor({ timeout: 5000 });
+      await manageBtn.click();
+
+      // Now on manage page
+      await page.waitForLoadState('networkidle');
+
+      // Click Guests tab
+      await page.getByRole('tab', { name: 'Guests' }).click();
+      await page.waitForTimeout(1500);
+
+      // Download CSV
+      const downloadButton = page.getByText('Download as CSV', { exact: true });
+
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 10000 }),
+        downloadButton.click()
+      ]);
+
+      const filePath = path.join(
+        DOWNLOAD_DIR,
+        `event-${Date.now()}.csv`
+      );
+
+      await download.saveAs(filePath);
+      console.log("Downloaded:", filePath);
+
+      // Go back to popup list
+      await page.goBack();
+      await page.waitForTimeout(2000);
+
+      // Scroll again to restore lazy content
+      await autoScroll(page);
+
+    } catch (err) {
+      console.log("Error on this card, moving on:", err.message);
+
+      try {
+        await page.goBack();
+        await page.waitForTimeout(2000);
+        await autoScroll(page);
+      } catch {}
+    }
+  }
 
   // Close popup
   await page.keyboard.press('Escape');
   await page.waitForTimeout(1000);
-
-  return eventIds;
 }
 
 (async () => {
   const browser = await chromium.launch({
-    headless: false,
+    headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
   const context = await browser.newContext({
-    storageState: 'storageState.json'
+    storageState: 'storageState.json',
+    acceptDownloads: true
   });
 
   const page = await context.newPage();
@@ -69,18 +118,11 @@ async function collectEventsFromSection(page, sectionIndex) {
     waitUntil: 'networkidle'
   });
 
-  console.log("Opened profile page");
+  console.log("Opened profile");
 
-  const hostingEvents = await collectEventsFromSection(page, 0);
-  const pastEvents = await collectEventsFromSection(page, 1);
+  await processSection(page, 0); // Hosting
+  await processSection(page, 1); // Past Events
 
-  const allEvents = [...new Set([...hostingEvents, ...pastEvents])];
-
-  console.log("\n===============================");
-  console.log("TOTAL UNIQUE EVENTS FOUND:", allEvents.length);
-  console.log("===============================");
-
-  console.log(allEvents);
-
+  console.log("\nAll CSVs processed");
   await browser.close();
 })();
