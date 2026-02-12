@@ -1,4 +1,4 @@
-console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync");
+console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Parallel with Event Names)");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -6,6 +6,9 @@ const path = require('path');
 const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
 const csv = require('csv-parser');
+
+// Increase listener limit for cleaner logs with parallel workers
+require('events').EventEmitter.defaultMaxListeners = 20;
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) {
@@ -20,16 +23,16 @@ let supabase = null;
 if (supabaseUrl && supabaseKey) {
   try {
     supabase = createClient(supabaseUrl, supabaseKey);
-    console.log("Supabase Client Initialized");
+    console.log("✅ Supabase Client Initialized");
   } catch (e) {
-    console.log("Supabase Init Failed:", e.message);
+    console.log("⚠️ Supabase Init Failed:", e.message);
   }
 } else {
-  console.log("SUPABASE_URL or SUPABASE_KEY missing. Skipping sync.");
+  console.log("⚠️ SUPABASE_URL or SUPABASE_KEY missing. Skipping sync.");
 }
 
-// Helper: Upsert CSV to Supabase
-async function upsertGuestsToSupabase(filePath, eventId) {
+// Helper: Upsert CSV to Supabase with Enhanced Mapping
+async function upsertGuestsToSupabase(filePath, eventId, eventName) {
   if (!supabase) return;
 
   const guests = [];
@@ -37,33 +40,48 @@ async function upsertGuestsToSupabase(filePath, eventId) {
     fs.createReadStream(filePath)
       .pipe(csv())
       .on('data', (row) => {
-        // Map CSV columns to DB columns
-        // Adjust keys based on actual CSV headers from Luma
-        // Common headers: "Name", "Email", "Status", "Ticket Type", "Approval Status"
-        const email = row['Email'] || row['email'];
-        if (email) { // Email is required for upsert key
+        const email = row['email'] || row['Email'];
+        if (email) {
+          // Extract custom fields safely
+          // Luma often uses Question headers like "What is your LinkedIn profile?"
+          // We try to find columns that 'look like' these fields if exact match fails
+          const getField = (keywords) => {
+            const key = Object.keys(row).find(k => k.toLowerCase().includes(keywords));
+            return key ? row[key] : null;
+          };
+
           guests.push({
             event_id: eventId,
+            event_name: eventName || 'Unknown Event',
             email: email,
-            name: row['Name'] || row['name'] || row['Guest Name'] || null,
-            status: row['Status'] || row['status'] || 'registered',
-            ticket_type: row['Ticket Type'] || row['Ticket'] || null,
-            approval_status: row['Approval Status'] || null,
-            synced_at: new Date().toISOString()
+            api_id: row['api_id'] || null, // Luma Guest ID
+            name: row['name'] || row['Name'] || `${row['first_name'] || ''} ${row['last_name'] || ''}`.trim(),
+            status: row['approval_status'] || row['status'] || 'registered',
+            ticket_type: row['ticket_name'] || row['Ticket Type'] || null,
+            created_at: row['created_at'] || new Date().toISOString(),
+            checked_in_at: row['checked_in_at'] || null,
+
+            // Metadata / Enhanced Fields
+            linkedin_url: row['What is your LinkedIn profile?'] || getField('linkedin'),
+            company: row['What company do you work for?'] || getField('company'),
+            job_title: row['What is your job title?'] || getField('job title'),
+            phone: row['phone_number'] || null,
+
+            synced_at: new Date().toISOString(),
+
+            // Store full row as JSONB for future-proofing
+            raw_data: row
           });
         }
       })
       .on('end', async () => {
         if (guests.length === 0) {
-          console.log(`  No guests found in ${eventId}.csv`);
           resolve();
           return;
         }
 
-        console.log(`   Syncing ${guests.length} guests to Supabase...`);
-
-        // Batch upsert (1000 items is a safe limit)
-        const BATCH_SIZE = 1000;
+        // Chunk upserts
+        const BATCH_SIZE = 500;
         for (let i = 0; i < guests.length; i += BATCH_SIZE) {
           const batch = guests.slice(i, i + BATCH_SIZE);
           const { error } = await supabase
@@ -71,274 +89,214 @@ async function upsertGuestsToSupabase(filePath, eventId) {
             .upsert(batch, { onConflict: 'event_id, email' });
 
           if (error) {
-            console.log(`   Supabase Upsert Error (Batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
+            console.log(`   ❌ Supabase Upsert Error (${eventId}): ${error.message}`);
           }
         }
-        console.log(`   Synced batch for ${eventId}`);
         resolve();
       })
       .on('error', (err) => {
-        console.log(`   CSV Read Error: ${err.message}`);
-        resolve(); // Don't crash main loop
+        console.log(`   ❌ CSV Read Error: ${err.message}`);
+        resolve(); // Don't crash worker
       });
   });
 }
 
+// WORKER LOGIC
+// We process events in a queue with limited concurrency
+const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
+
 (async () => {
-  // Handle storage state file selection
+  // Session setup
   let sessionFile = 'storageState.json';
-  if (!fs.existsSync(sessionFile) && fs.existsSync('session.json')) {
-    sessionFile = 'session.json';
-    console.log("Using session.json as storage state.");
-  } else if (fs.existsSync(sessionFile)) {
-    console.log("Using storageState.json as storage state.");
-  } else {
-    console.log("Warning: No storage state file found. You might need to log in manually first.");
-    sessionFile = null;
-  }
+  if (!fs.existsSync(sessionFile) && fs.existsSync('session.json')) sessionFile = 'session.json';
 
   const browser = await chromium.launch({
-    headless: true, // Run headless for CI/Background
+    headless: true,
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
-  // Set Desktop Viewport
-  const context = await browser.newContext({
-    storageState: sessionFile ? sessionFile : undefined,
-    acceptDownloads: true,
-    viewport: { width: 1920, height: 1080 }, // Force desktop size
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-  });
-
+  // Initial Discovery Phase (Single Page)
+  const context = await browser.newContext({ storageState: sessionFile, userAgent: 'Mozilla/5.0...' });
   const page = await context.newPage();
 
-  // 1️Open profile page
-  console.log("Opening profile: https://lu.ma/user/murray");
-  await page.goto('https://lu.ma/user/murray', {
-    waitUntil: 'domcontentloaded'
-  });
+  console.log("🔍 Discovering events on profile...");
+  await page.goto('https://lu.ma/user/murray', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2000);
 
-  // Wait for login check
-  await page.waitForTimeout(3000);
-  const isGuest = await page.locator('button:has-text("Sign in"), a[href*="/signin"]').count() > 0;
-  console.log("Is logged in (estimated):", !isGuest);
-
+  // Scrape Logic 
   const allEventUrls = new Set();
-
   async function scrapeModal() {
     const modal = page.locator('.lux-modal-body');
     if (await modal.count() > 0 && await modal.isVisible()) {
-      console.log("Modal found. Scrolling to load all events...");
+      process.stdout.write("   Scrolling modal");
       let previousHeight = 0;
       let currentHeight = await modal.evaluate(el => el.scrollHeight);
       let attempts = 0;
       while (previousHeight !== currentHeight && attempts < 30) {
         previousHeight = currentHeight;
         await modal.evaluate(el => el.scrollTo(0, el.scrollHeight));
-        await page.waitForTimeout(1500);
+        await page.waitForTimeout(1000); // Faster scroll
         currentHeight = await modal.evaluate(el => el.scrollHeight);
         if (previousHeight === currentHeight) {
-          await page.waitForTimeout(1500);
+          await page.waitForTimeout(1000);
           currentHeight = await modal.evaluate(el => el.scrollHeight);
         }
         attempts++;
         process.stdout.write(`.`);
       }
-      console.log("\nFinished scrolling modal.");
+      console.log("\n   Done scrolling.");
 
       const eventUrls = await page.evaluate(() => {
         const modal = document.querySelector('.lux-modal-body');
         const anchors = Array.from(modal.querySelectorAll('a[href^="/"]'));
-        return anchors
-          .map(a => a.getAttribute('href'))
-          .filter(href => {
-            if (!href || href.length < 2) return false;
-            const ignore = ['/user', '/home', '/create', '/signin', '/calendar', '/discover', '/explore', '/pricing', '/legal'];
-            if (ignore.some(prefix => href.startsWith(prefix))) return false;
-            if (href.startsWith('?')) return false;
-            return true;
-          });
+        return anchors.map(a => a.getAttribute('href')).filter(href => {
+          if (!href || href.length < 2) return false;
+          const ignore = ['/user', '/home', '/create', '/signin', '/calendar', '/discover', '/explore'];
+          if (ignore.some(prefix => href.startsWith(prefix))) return false;
+          return true;
+        });
       });
       eventUrls.forEach(url => allEventUrls.add(url));
-
-      // Close modal
       await page.keyboard.press('Escape');
       await page.waitForTimeout(500);
     }
   }
 
-  // 2️Find "Hosting" section and click "View All"
-  console.log("Looking for 'Hosting' section...");
+  // View All buttons
+  // Try to find "View all" buttons.
+  const viewAllBtns = await page.getByText('View All').all();
+  if (viewAllBtns.length > 0) {
+    // Typically first is Hosting, second is Past
+    console.log(`   Clicking 'View All' (Hosting)...`);
+    if (await viewAllBtns[0].isVisible()) {
+      await viewAllBtns[0].click();
+      await page.waitForTimeout(1000);
+      await scrapeModal();
+    }
 
-  try {
-    const hostingHeader = page.locator('h2, h3, div').filter({ hasText: /^Hosting$/ }).first();
-    // Heuristic: The first "View All" usually belongs to Hosting if it exists.
-    // But let's try to be precise if possible.
-
-    const viewAllBtns = await page.getByText('View All').all();
-
-    if (viewAllBtns.length > 0) {
-      console.log(`Found ${viewAllBtns.length} 'View All' buttons.`);
-      // Click the first one (usually Hosting)
-      console.log("Clicking 'View All' #1 (Hosting)...");
-      if (await viewAllBtns[0].isVisible()) {
-        await viewAllBtns[0].click();
+    if (viewAllBtns.length > 1) {
+      console.log(`   Clicking 'View All' (Past)...`);
+      if (await viewAllBtns[1].isVisible()) {
+        await viewAllBtns[1].click();
         await page.waitForTimeout(1000);
         await scrapeModal();
       }
-
-      // Check for second one (Past Events)
-      if (viewAllBtns.length > 1) {
-        console.log("Clicking 'View All' #2 (Past Events)...");
-        if (await viewAllBtns[1].isVisible()) {
-          await viewAllBtns[1].click();
-          await page.waitForTimeout(1000);
-          await scrapeModal();
-        }
-      }
-    } else {
-      console.log("No 'View All' buttons found.");
     }
-  } catch (err) {
-    console.log("Error processing View All buttons:", err.message);
   }
 
-  const uniqueSlugs = [...allEventUrls]; // Deduplicate
-  console.log(`Found ${uniqueSlugs.length} unique event links.`);
+  await context.close(); // Close discovery context
 
-  // 5️ Process each event
-  for (let i = 0; i < uniqueSlugs.length; i++) {
-    const slug = uniqueSlugs[i];
-    const fullUrl = `https://lu.ma${slug}`;
+  const uniqueSlugs = [...allEventUrls];
+  console.log(`\n📋 Found ${uniqueSlugs.length} unique events. Starting workers...`);
 
-    console.log(`\n[${i + 1}/${uniqueSlugs.length}] Processing: ${slug}`);
+  // WORKER QUEUE 
+  const queue = [...uniqueSlugs];
+  let processedCount = 0;
 
+  // Worker Function
+  const processEventItem = async (workerPage, slug, workerId) => {
+    // console.log(`   [W${workerId}] Start ${slug}`);
     try {
-      // Go to the event page
-      await page.goto(fullUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(1500);
+      await workerPage.goto(`https://lu.ma${slug}`, { waitUntil: 'domcontentloaded' });
+      await workerPage.waitForTimeout(500); // Small wait
+
+      // EXTRACT EVENT NAME (H1)
+      let eventName = null;
+      try {
+        const h1 = workerPage.locator('h1').first();
+        if (await h1.isVisible()) {
+          eventName = await h1.innerText();
+        }
+      } catch (e) { }
 
       let evtId = null;
+      // ID Extraction Strategies
+      const curUrl = workerPage.url();
+      if (curUrl.match(/evt-[A-Za-z0-9]+/)) evtId = curUrl.match(/evt-[A-Za-z0-9]+/)[0];
 
-      // 1. Check if we are already on a manage page or if URL has ID
-      const currentUrl = page.url();
-      const urlMatch = currentUrl.match(/evt-[A-Za-z0-9]+/);
-      if (urlMatch) {
-        evtId = urlMatch[0];
-      }
-
-      // 2. Check "Manage Event" button href
       if (!evtId) {
-        const manageBtn = page.locator('a[href*="/event/manage/"], a[href*="evt-"]').first();
-        if (await manageBtn.isVisible()) {
-          const href = await manageBtn.getAttribute('href');
-          // console.log("   Manage Btn Href:", href);
-          const hrefMatch = href.match(/evt-[A-Za-z0-9]+/);
-          if (hrefMatch) {
-            evtId = hrefMatch[0];
-            console.log("   Found ID via Manage Button Href:", evtId);
-          }
+        const mBtn = workerPage.locator('a[href*="/event/manage/"], a[href*="evt-"]').first();
+        if (await mBtn.isVisible()) {
+          const href = await mBtn.getAttribute('href');
+          if (href && href.match(/evt-[A-Za-z0-9]+/)) evtId = href.match(/evt-[A-Za-z0-9]+/)[0];
         }
       }
-
-      // 3. Check specific metadata / next data
       if (!evtId) {
-        const content = await page.content();
-        // Be conservative: evt- followed by alphanumeric, at least 10 chars
-        const match = content.match(/evt-[A-Za-z0-9]{10,}/);
-        if (match) {
-          evtId = match[0];
-          console.log("   Found ID via Page Source scrape:", evtId);
-        }
+        const html = await workerPage.content();
+        const m = html.match(/evt-[A-Za-z0-9]{10,}/);
+        if (m) evtId = m[0];
       }
 
       if (!evtId) {
-        console.log("   ❌ Could not resolve Event ID. Skipping.");
-        continue;
+        console.log(`   [W${workerId}] ⚠️ No ID for ${slug}`);
+        return;
       }
 
-      // Construct Guests URL directly
-      const guestsUrl = `https://lu.ma/event/manage/${evtId}/guests`;
-      console.log(`   Navigating to: ${guestsUrl}`);
-      await page.goto(guestsUrl, { waitUntil: 'domcontentloaded' });
+      // Go to Guests
+      await workerPage.goto(`https://lu.ma/event/manage/${evtId}/guests`, { waitUntil: 'domcontentloaded' });
+      await workerPage.waitForTimeout(1500);
 
-      // Wait for potential redirect or load
-      await page.waitForTimeout(2500);
-
-      // 6️Click "Download as CSV"
-      // Inspection revealed it's an ICON button in the header toolbar, often without text "Download as CSV".
-      // We look for aria-labels or known classes.
-
-      // Try multiple selectors
-      const potentialSelectors = [
-        'button[aria-label*="Download"]',
-        'button[aria-label*="Export"]',
-        'button:has(svg path[d*="M19"])', // Common download icon path start (brittle but tries)
-        'div[role="button"][aria-label*="Download"]',
-        'button:has-text("Download")', // Fallback if text exists
-        'button:has-text("Export")',
-        '.content-header button:last-child' // Often the last button in header
+      // Find Button
+      const selectors = [
+        'button[aria-label*="Download"]', 'button[aria-label*="Export"]',
+        'button:has(svg path[d*="M19"])', 'div[role="button"][aria-label*="Download"]'
       ];
-
-      let downloadBtn = null;
-      for (const selector of potentialSelectors) {
-        const btn = page.locator(selector).first();
-        if (await btn.isVisible()) {
-          downloadBtn = btn;
-          console.log(`   Found potential download button via selector: ${selector}`);
-          break;
-        }
+      let btn = null;
+      for (const s of selectors) {
+        const b = workerPage.locator(s).first();
+        if (await b.isVisible()) { btn = b; break; }
       }
 
-      if (downloadBtn) {
-        console.log("   Found Download button. Attempting to click...");
-
+      if (btn) {
         let download = null;
-        // Retry mechanism for clicking
-        for (let attempt = 1; attempt <= 3; attempt++) {
+        for (let i = 1; i <= 3; i++) {
           try {
-            console.log(`   Attempt ${attempt}: Clicking...`);
-            const downloadPromise = page.waitForEvent('download', { timeout: 45000 }); // Increased timeout to 45s
-
-            // Ensure button is stable and clickable
-            await downloadBtn.scrollIntoViewIfNeeded();
-            await downloadBtn.click({ timeout: 5000, force: true }); // Force click to bypass overlays
-
-            download = await downloadPromise;
-            break; // Success
-          } catch (e) {
-            console.log(`    Attempt ${attempt} failed (timeout or error): ${e.message}`);
-            // Maybe it needs a moment?
-            if (attempt < 3) await page.waitForTimeout(3000);
-          }
+            const p = workerPage.waitForEvent('download', { timeout: 20000 }); // 20s
+            await btn.click({ timeout: 5000, force: true });
+            download = await p;
+            break;
+          } catch (e) { if (i < 3) await workerPage.waitForTimeout(1000); }
         }
 
         if (download) {
-          const savePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
-          await download.saveAs(savePath);
-          console.log(`    Successfully saved: ${savePath}`);
-
-          // Trigger Supabase Sync
-          if (supabase) {
-            await upsertGuestsToSupabase(savePath, evtId);
-          }
-
+          const p = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
+          await download.saveAs(p);
+          processedCount++;
+          process.stdout.write(`✅`); // Compact progress
+          // Sync with Event Name
+          if (supabase) await upsertGuestsToSupabase(p, evtId, eventName);
         } else {
-          console.log("    Failed to capture download after 3 attempts.");
-          // Screenshot for debugging
-          await page.screenshot({ path: `debug_timeout_${slug.replace(/\//g, '')}.png` });
+          console.log(`   [W${workerId}] ❌ Timeout DL ${evtId}`);
         }
-
       } else {
-        console.log("    'Download/Export' button not found.");
-        // await page.screenshot({ path: `debug_no_btn_${slug.replace(/\//g, '')}.png` });
+        // console.log(`   [W${workerId}] ⚠️ No DL Btn ${evtId}`);
       }
 
-    } catch (err) {
-      console.log(`    Error processing event ${slug}: ${err.message}`);
+    } catch (e) {
+      console.log(`   [W${workerId}] ❌ Err ${slug}: ${e.message}`);
     }
+  };
+
+  // Launch Workers
+  const workers = [];
+  for (let i = 0; i < CONCURRENT_WORKERS; i++) {
+    workers.push(async () => {
+      const wContext = await browser.newContext({
+        storageState: sessionFile ? sessionFile : undefined,
+        acceptDownloads: true,
+        viewport: { width: 1920, height: 1080 }
+      });
+      const wPage = await wContext.newPage();
+
+      while (queue.length > 0) {
+        const slug = queue.shift();
+        await processEventItem(wPage, slug, i + 1);
+      }
+      await wContext.close();
+    });
   }
 
-  console.log("\nAll processing complete.");
+  await Promise.all(workers.map(w => w()));
+  console.log(`\n\n🎉 Done! Processed ${processedCount} events.`);
   await browser.close();
 })();
