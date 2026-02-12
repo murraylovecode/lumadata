@@ -1,40 +1,42 @@
-name: Lu.ma Bot
+name: Weekly Luma Sync
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: '0 6 * * *'
+    - cron: '0 0 * * 0' # Runs at 00:00 every Sunday
+  workflow_dispatch: # Allows manual trigger
+
+permissions:
+  contents: write
 
 jobs:
-  run:
+  sync:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
+      - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Setup Node
+      - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
-          node-version: 20
+          node-version: '20'
 
-      - name: Install packages
-        run: npm install
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Install Playwright deps
-        run: npx playwright install-deps
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
 
-      - name: Install Playwright browsers
-        run: npx playwright install
-
-      # THIS IS THE IMPORTANT PART
-      - name: Install virtual display (Xvfb)
-        run: sudo apt-get update && sudo apt-get install -y xvfb
-
-      - name: Run bot in real browser (not headless)
-        run: xvfb-run --auto-servernum node index.js
+      - name: Run Sync Script
         env:
-          LUMA_EMAIL: ${{ secrets.LUMA_EMAIL }}
-          LUMA_PASSWORD: ${{ secrets.LUMA_PASSWORD }}
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
-          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+          # Need to provide storageState via secret or other means
+          # For example, using a base64 encoded string and decoding it:
+          # STORAGE_STATE_B64: ${{ secrets.STORAGE_STATE_B64 }}
+        run: |
+           # If using base64 storageState secret (recommended for GH actions):
+           # echo $STORAGE_STATE_B64 | base64 -d > storageState.json
+           
+           # Or expecting storageState.json committed (less secure, but possible)
+           
+           xvfb-run --auto-servernum node index.js
