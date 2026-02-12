@@ -1,13 +1,87 @@
-console.log("Lu.ma Event ID Extractor & CSV Downloader");
+console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync");
 
 require('dotenv').config();
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
+const { createClient } = require('@supabase/supabase-js');
+const csv = require('csv-parser');
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
 if (!fs.existsSync(DOWNLOAD_DIR)) {
   fs.mkdirSync(DOWNLOAD_DIR, { recursive: true });
+}
+
+// 1. Initialize Supabase
+const supabaseUrl = process.env.SUPABASE_URL;
+const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+let supabase = null;
+
+if (supabaseUrl && supabaseKey) {
+  try {
+    supabase = createClient(supabaseUrl, supabaseKey);
+    console.log("✅ Supabase Client Initialized");
+  } catch (e) {
+    console.log("⚠️ Supabase Init Failed:", e.message);
+  }
+} else {
+  console.log("⚠️ SUPABASE_URL or SUPABASE_KEY missing. Skipping sync.");
+}
+
+// Helper: Upsert CSV to Supabase
+async function upsertGuestsToSupabase(filePath, eventId) {
+  if (!supabase) return;
+
+  const guests = [];
+  return new Promise((resolve, reject) => {
+    fs.createReadStream(filePath)
+      .pipe(csv())
+      .on('data', (row) => {
+        // Map CSV columns to DB columns
+        // Adjust keys based on actual CSV headers from Luma
+        // Common headers: "Name", "Email", "Status", "Ticket Type", "Approval Status"
+        const email = row['Email'] || row['email'];
+        if (email) { // Email is required for upsert key
+          guests.push({
+            event_id: eventId,
+            email: email,
+            name: row['Name'] || row['name'] || row['Guest Name'] || null,
+            status: row['Status'] || row['status'] || 'registered',
+            ticket_type: row['Ticket Type'] || row['Ticket'] || null,
+            approval_status: row['Approval Status'] || null,
+            synced_at: new Date().toISOString()
+          });
+        }
+      })
+      .on('end', async () => {
+        if (guests.length === 0) {
+          console.log(`   ℹ️ No guests found in ${eventId}.csv`);
+          resolve();
+          return;
+        }
+
+        console.log(`   🔄 Syncing ${guests.length} guests to Supabase...`);
+
+        // Batch upsert (1000 items is a safe limit)
+        const BATCH_SIZE = 1000;
+        for (let i = 0; i < guests.length; i += BATCH_SIZE) {
+          const batch = guests.slice(i, i + BATCH_SIZE);
+          const { error } = await supabase
+            .from('luma_guests')
+            .upsert(batch, { onConflict: 'event_id, email' });
+
+          if (error) {
+            console.log(`   ❌ Supabase Upsert Error (Batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
+          }
+        }
+        console.log(`   ✅ Synced batch for ${eventId}`);
+        resolve();
+      })
+      .on('error', (err) => {
+        console.log(`   ❌ CSV Read Error: ${err.message}`);
+        resolve(); // Don't crash main loop
+      });
+  });
 }
 
 (async () => {
@@ -243,6 +317,12 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
           const savePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
           await download.saveAs(savePath);
           console.log(`   ✅ Successfully saved: ${savePath}`);
+
+          // Trigger Supabase Sync
+          if (supabase) {
+            await upsertGuestsToSupabase(savePath, evtId);
+          }
+
         } else {
           console.log("   ❌ Failed to capture download after 3 attempts.");
           // Screenshot for debugging
