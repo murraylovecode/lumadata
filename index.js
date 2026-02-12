@@ -217,24 +217,41 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
       }
 
       if (downloadBtn) {
-        console.log("   Clicking Download button...");
+        console.log("   Found Download button. Attempting to click...");
 
-        try {
-          const [download] = await Promise.all([
-            page.waitForEvent('download', { timeout: 15000 }),
-            downloadBtn.click()
-          ]);
+        let download = null;
+        // Retry mechanism for clicking
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            console.log(`   Attempt ${attempt}: Clicking...`);
+            const downloadPromise = page.waitForEvent('download', { timeout: 45000 }); // Increased timeout to 45s
 
+            // Ensure button is stable and clickable
+            await downloadBtn.scrollIntoViewIfNeeded();
+            await downloadBtn.click({ timeout: 5000, force: true }); // Force click to bypass overlays
+
+            download = await downloadPromise;
+            break; // Success
+          } catch (e) {
+            console.log(`   ⚠️ Attempt ${attempt} failed (timeout or error): ${e.message}`);
+            // Maybe it needs a moment?
+            if (attempt < 3) await page.waitForTimeout(3000);
+          }
+        }
+
+        if (download) {
           const savePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
           await download.saveAs(savePath);
           console.log(`   ✅ Successfully saved: ${savePath}`);
-        } catch (e) {
-          console.log(`   ⚠️ Failed to capture download: ${e.message}`);
+        } else {
+          console.log("   ❌ Failed to capture download after 3 attempts.");
+          // Screenshot for debugging
+          await page.screenshot({ path: `debug_timeout_${slug.replace(/\//g, '')}.png` });
         }
 
       } else {
         console.log("   ⚠️ 'Download/Export' button not found.");
-        // await page.screenshot({ path: `debug_no_csv_${slug.replace(/\//g, '')}.png` });
+        // await page.screenshot({ path: `debug_no_btn_${slug.replace(/\//g, '')}.png` });
       }
 
     } catch (err) {
