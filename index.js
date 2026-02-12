@@ -1,4 +1,4 @@
-console.log("Lu.ma CSV downloader — stable UI flow");
+console.log("Lu.ma CSV downloader — direct evt extraction");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -11,94 +11,16 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
 }
 
 async function autoScroll(page) {
-  let previous = 0;
+  let previousHeight = 0;
 
   while (true) {
-    const current = await page.locator('a[href^="/event/manage/evt-"]').count();
-    if (current === previous) break;
+    const currentHeight = await page.evaluate(() => document.body.scrollHeight);
+    if (currentHeight === previousHeight) break;
 
-    previous = current;
+    previousHeight = currentHeight;
     await page.mouse.wheel(0, 5000);
     await page.waitForTimeout(1000);
   }
-}
-
-async function processSection(page, sectionIndex) {
-  console.log(`\n=== Processing section ${sectionIndex} (0=Hosting,1=Past) ===`);
-
-  const viewAllButtons = await page.getByText('View All', { exact: true }).all();
-  if (!viewAllButtons[sectionIndex]) {
-    console.log("View All button not found");
-    return;
-  }
-
-  await viewAllButtons[sectionIndex].click();
-  await page.waitForTimeout(2000);
-
-  await autoScroll(page);
-
-  const cards = page.locator('a[href^="/event/manage/evt-"]');
-  const total = await cards.count();
-
-  console.log(`Found ${total} event cards`);
-
-  for (let i = 0; i < total; i++) {
-    console.log(`\nOpening card ${i + 1}/${total}`);
-
-    try {
-      const card = cards.nth(i);
-      await card.scrollIntoViewIfNeeded();
-      await card.click();
-      
-      // Wait for Manage button in popup
-      const manageBtn = page.getByText('Manage', { exact: true });
-      await manageBtn.waitFor({ timeout: 5000 });
-      await manageBtn.click();
-
-      // Now on manage page
-      await page.waitForLoadState('networkidle');
-
-      // Click Guests tab
-      await page.getByRole('tab', { name: 'Guests' }).click();
-      await page.waitForTimeout(1500);
-
-      // Download CSV
-      const downloadButton = page.getByText('Download as CSV', { exact: true });
-
-      const [download] = await Promise.all([
-        page.waitForEvent('download', { timeout: 10000 }),
-        downloadButton.click()
-      ]);
-
-      const filePath = path.join(
-        DOWNLOAD_DIR,
-        `event-${Date.now()}.csv`
-      );
-
-      await download.saveAs(filePath);
-      console.log("Downloaded:", filePath);
-
-      // Go back to popup list
-      await page.goBack();
-      await page.waitForTimeout(2000);
-
-      // Scroll again to restore lazy content
-      await autoScroll(page);
-
-    } catch (err) {
-      console.log("Error on this card, moving on:", err.message);
-
-      try {
-        await page.goBack();
-        await page.waitForTimeout(2000);
-        await autoScroll(page);
-      } catch {}
-    }
-  }
-
-  // Close popup
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(1000);
 }
 
 (async () => {
@@ -114,15 +36,62 @@ async function processSection(page, sectionIndex) {
 
   const page = await context.newPage();
 
+  // 1️⃣ Open profile page
   await page.goto('https://luma.com/user/murray', {
     waitUntil: 'networkidle'
   });
 
   console.log("Opened profile");
 
-  await processSection(page, 0); // Hosting
-  await processSection(page, 1); // Past Events
+  // 2️⃣ Scroll fully to load Hosting + Past Events
+  await autoScroll(page);
 
-  console.log("\nAll CSVs processed");
+  // 3️⃣ Extract all evt IDs from page HTML
+  const html = await page.content();
+
+  const evtMatches = html.match(/evt-[A-Za-z0-9]+/g) || [];
+  const uniqueEvtIds = [...new Set(evtMatches)];
+
+  console.log("Total unique events found:", uniqueEvtIds.length);
+
+  if (uniqueEvtIds.length === 0) {
+    console.log("No events found. Exiting.");
+    await browser.close();
+    return;
+  }
+
+  // 4️⃣ Loop through each event ID
+  for (let i = 0; i < uniqueEvtIds.length; i++) {
+    const evtId = uniqueEvtIds[i];
+
+    console.log(`\nProcessing ${i + 1}/${uniqueEvtIds.length}: ${evtId}`);
+
+    try {
+      const guestsUrl = `https://luma.com/event/manage/${evtId}/guests`;
+
+      await page.goto(guestsUrl, {
+        waitUntil: 'networkidle'
+      });
+
+      // Wait for Download button
+      const downloadButton = page.getByText('Download as CSV', { exact: true });
+      await downloadButton.waitFor({ timeout: 10000 });
+
+      const [download] = await Promise.all([
+        page.waitForEvent('download', { timeout: 15000 }),
+        downloadButton.click()
+      ]);
+
+      const filePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
+      await download.saveAs(filePath);
+
+      console.log("Downloaded:", filePath);
+
+    } catch (err) {
+      console.log("Skipping (no permission or no guests):", evtId);
+    }
+  }
+
+  console.log("\nAll events processed");
   await browser.close();
 })();
