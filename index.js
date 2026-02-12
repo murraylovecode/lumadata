@@ -14,7 +14,7 @@ async function autoScroll(page) {
   let previous = 0;
 
   while (true) {
-    const current = await page.locator('div:has-text("By ")').count();
+    const current = await page.locator('a[href^="/event/manage/evt-"]').count();
     if (current === previous) break;
 
     previous = current;
@@ -37,7 +37,7 @@ async function processSection(page, sectionIndex) {
 
   await autoScroll(page);
 
-  const cards = page.locator('a[href^="/event/manage/evt-');
+  const cards = page.locator('a[href^="/event/manage/evt-"]');
   const total = await cards.count();
 
   console.log(`Found ${total} event cards`);
@@ -48,7 +48,6 @@ async function processSection(page, sectionIndex) {
     try {
       const card = cards.nth(i);
       await card.scrollIntoViewIfNeeded();
-      const card = cards.nth(i);
       await card.click();
       
       // Wait for Manage button in popup
