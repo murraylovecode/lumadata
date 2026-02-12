@@ -20,12 +20,12 @@ let supabase = null;
 if (supabaseUrl && supabaseKey) {
   try {
     supabase = createClient(supabaseUrl, supabaseKey);
-    console.log("✅ Supabase Client Initialized");
+    console.log("Supabase Client Initialized");
   } catch (e) {
-    console.log("⚠️ Supabase Init Failed:", e.message);
+    console.log("Supabase Init Failed:", e.message);
   }
 } else {
-  console.log("⚠️ SUPABASE_URL or SUPABASE_KEY missing. Skipping sync.");
+  console.log("SUPABASE_URL or SUPABASE_KEY missing. Skipping sync.");
 }
 
 // Helper: Upsert CSV to Supabase
@@ -55,12 +55,12 @@ async function upsertGuestsToSupabase(filePath, eventId) {
       })
       .on('end', async () => {
         if (guests.length === 0) {
-          console.log(`   ℹ️ No guests found in ${eventId}.csv`);
+          console.log(`  No guests found in ${eventId}.csv`);
           resolve();
           return;
         }
 
-        console.log(`   🔄 Syncing ${guests.length} guests to Supabase...`);
+        console.log(`   Syncing ${guests.length} guests to Supabase...`);
 
         // Batch upsert (1000 items is a safe limit)
         const BATCH_SIZE = 1000;
@@ -71,14 +71,14 @@ async function upsertGuestsToSupabase(filePath, eventId) {
             .upsert(batch, { onConflict: 'event_id, email' });
 
           if (error) {
-            console.log(`   ❌ Supabase Upsert Error (Batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
+            console.log(`   Supabase Upsert Error (Batch ${Math.floor(i / BATCH_SIZE) + 1}): ${error.message}`);
           }
         }
-        console.log(`   ✅ Synced batch for ${eventId}`);
+        console.log(`   Synced batch for ${eventId}`);
         resolve();
       })
       .on('error', (err) => {
-        console.log(`   ❌ CSV Read Error: ${err.message}`);
+        console.log(`   CSV Read Error: ${err.message}`);
         resolve(); // Don't crash main loop
       });
   });
@@ -112,7 +112,7 @@ async function upsertGuestsToSupabase(filePath, eventId) {
 
   const page = await context.newPage();
 
-  // 1️⃣ Open profile page
+  // 1️Open profile page
   console.log("Opening profile: https://lu.ma/user/murray");
   await page.goto('https://lu.ma/user/murray', {
     waitUntil: 'domcontentloaded'
@@ -167,7 +167,7 @@ async function upsertGuestsToSupabase(filePath, eventId) {
     }
   }
 
-  // 2️⃣ Find "Hosting" section and click "View All"
+  // 2️Find "Hosting" section and click "View All"
   console.log("Looking for 'Hosting' section...");
 
   try {
@@ -206,7 +206,7 @@ async function upsertGuestsToSupabase(filePath, eventId) {
   const uniqueSlugs = [...allEventUrls]; // Deduplicate
   console.log(`Found ${uniqueSlugs.length} unique event links.`);
 
-  // 5️⃣ Process each event
+  // 5️ Process each event
   for (let i = 0; i < uniqueSlugs.length; i++) {
     const slug = uniqueSlugs[i];
     const fullUrl = `https://lu.ma${slug}`;
@@ -265,7 +265,7 @@ async function upsertGuestsToSupabase(filePath, eventId) {
       // Wait for potential redirect or load
       await page.waitForTimeout(2500);
 
-      // 6️⃣ Click "Download as CSV"
+      // 6️Click "Download as CSV"
       // Inspection revealed it's an ICON button in the header toolbar, often without text "Download as CSV".
       // We look for aria-labels or known classes.
 
@@ -307,7 +307,7 @@ async function upsertGuestsToSupabase(filePath, eventId) {
             download = await downloadPromise;
             break; // Success
           } catch (e) {
-            console.log(`   ⚠️ Attempt ${attempt} failed (timeout or error): ${e.message}`);
+            console.log(`    Attempt ${attempt} failed (timeout or error): ${e.message}`);
             // Maybe it needs a moment?
             if (attempt < 3) await page.waitForTimeout(3000);
           }
@@ -316,7 +316,7 @@ async function upsertGuestsToSupabase(filePath, eventId) {
         if (download) {
           const savePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
           await download.saveAs(savePath);
-          console.log(`   ✅ Successfully saved: ${savePath}`);
+          console.log(`    Successfully saved: ${savePath}`);
 
           // Trigger Supabase Sync
           if (supabase) {
@@ -324,18 +324,18 @@ async function upsertGuestsToSupabase(filePath, eventId) {
           }
 
         } else {
-          console.log("   ❌ Failed to capture download after 3 attempts.");
+          console.log("    Failed to capture download after 3 attempts.");
           // Screenshot for debugging
           await page.screenshot({ path: `debug_timeout_${slug.replace(/\//g, '')}.png` });
         }
 
       } else {
-        console.log("   ⚠️ 'Download/Export' button not found.");
+        console.log("    'Download/Export' button not found.");
         // await page.screenshot({ path: `debug_no_btn_${slug.replace(/\//g, '')}.png` });
       }
 
     } catch (err) {
-      console.log(`   ❌ Error processing event ${slug}: ${err.message}`);
+      console.log(`    Error processing event ${slug}: ${err.message}`);
     }
   }
 
