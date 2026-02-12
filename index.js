@@ -19,7 +19,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
   } else if (fs.existsSync(sessionFile)) {
     console.log("Using storageState.json as storage state.");
   } else {
-    console.log("Warning: No storage state file found. You might need to log in.");
+    console.log("Warning: No storage state file found. You might need to log in manually first.");
     sessionFile = null;
   }
 
@@ -28,9 +28,11 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
+  // Set Desktop Viewport
   const context = await browser.newContext({
     storageState: sessionFile ? sessionFile : undefined,
     acceptDownloads: true,
+    viewport: { width: 1920, height: 1080 }, // Force desktop size
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   });
 
@@ -42,124 +44,93 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
     waitUntil: 'domcontentloaded'
   });
 
-  // Wait for page to settle
+  // Wait for login check
   await page.waitForTimeout(3000);
+  const isGuest = await page.locator('button:has-text("Sign in"), a[href*="/signin"]').count() > 0;
+  console.log("Is logged in (estimated):", !isGuest);
 
-  // 2️⃣ Find "Hosting" section and click "View All"
-  console.log("Looking for 'Hosting' section...");
+  const allEventUrls = new Set();
 
-  let viewAllClicked = false;
-
-  try {
-    // Strategy: Find a section containing text "Hosting" and then find "View All" within or near it.
-    // We look for a container that has both "Hosting" and a button "View All"
-    // Or simply find the first "View All" button on the page if "Hosting" is the primary section.
-
-    const hostingText = page.getByText('Hosting', { exact: true });
-    if (await hostingText.count() > 0) {
-      console.log("Found 'Hosting' text.");
-      // Assuming 'Hosting' is a header, we want the 'View All' associated with it.
-      // Usually they are siblings in a flex container or parent/child.
-      // Let's try to click the FIRST "View All" button on the page, as Hosting is usually the top section.
-
-      const viewAllBtns = page.getByText('View All');
-      if (await viewAllBtns.count() > 0) {
-        console.log(`Found ${await viewAllBtns.count()} 'View All' buttons. Clicking header one...`);
-        // Usually the first one corresponds to the top section (Hosting)
-        await viewAllBtns.first().click();
-        viewAllClicked = true;
-      } else {
-        console.log("Hosting text found but no 'View All' button visible.");
-      }
-    } else {
-      console.log("'Hosting' section text not found. Checking if we are already seeing a list or if structure is different.");
-    }
-
-  } catch (err) {
-    console.log("Error finding/clicking View All:", err.message);
-  }
-
-  if (!viewAllClicked) {
-    console.log("⚠️ Could not click 'View All'. Will try to scrape whatever events are visible on main page.");
-  } else {
-    console.log("Waiting for modal/list to load...");
-    // Wait for modal transition
-    await page.waitForTimeout(2000);
-
-    // 3️⃣ Scroll to end of list
-    // Luma usually opens a modal with class .lux-modal-body OR redirects to a page.
-    // If it's a modal:
+  async function scrapeModal() {
     const modal = page.locator('.lux-modal-body');
     if (await modal.count() > 0 && await modal.isVisible()) {
       console.log("Modal found. Scrolling to load all events...");
-
       let previousHeight = 0;
       let currentHeight = await modal.evaluate(el => el.scrollHeight);
       let attempts = 0;
-
-      // Scroll loop
       while (previousHeight !== currentHeight && attempts < 30) {
         previousHeight = currentHeight;
-        // Scroll to bottom
         await modal.evaluate(el => el.scrollTo(0, el.scrollHeight));
-        // Wait for network/render
         await page.waitForTimeout(1500);
-        // Check new height
         currentHeight = await modal.evaluate(el => el.scrollHeight);
-        // Also check if height hasn't changed but we might be waiting for loader
         if (previousHeight === currentHeight) {
-          // Wait a bit longer just in case
           await page.waitForTimeout(1500);
           currentHeight = await modal.evaluate(el => el.scrollHeight);
         }
         attempts++;
-        process.stdout.write(`.`); // progress indicator
+        process.stdout.write(`.`);
       }
       console.log("\nFinished scrolling modal.");
-    } else {
-      console.log("No modal found. Maybe 'View All' didn't open one, or page redirected?");
+
+      const eventUrls = await page.evaluate(() => {
+        const modal = document.querySelector('.lux-modal-body');
+        const anchors = Array.from(modal.querySelectorAll('a[href^="/"]'));
+        return anchors
+          .map(a => a.getAttribute('href'))
+          .filter(href => {
+            if (!href || href.length < 2) return false;
+            const ignore = ['/user', '/home', '/create', '/signin', '/calendar', '/discover', '/explore', '/pricing', '/legal'];
+            if (ignore.some(prefix => href.startsWith(prefix))) return false;
+            if (href.startsWith('?')) return false;
+            return true;
+          });
+      });
+      eventUrls.forEach(url => allEventUrls.add(url));
+
+      // Close modal
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(500);
     }
   }
 
-  // 4️⃣ Extract all event links
-  console.log("Extracting event links...");
-  // We want links that look like event slugs.
-  // We should extract from the modal if it's open, otherwise from the page.
+  // 2️⃣ Find "Hosting" section and click "View All"
+  console.log("Looking for 'Hosting' section...");
 
-  const eventUrls = await page.evaluate(() => {
-    // If modal is open, scope to modal
-    const modal = document.querySelector('.lux-modal-body');
-    const root = modal || document;
+  try {
+    const hostingHeader = page.locator('h2, h3, div').filter({ hasText: /^Hosting$/ }).first();
+    // Heuristic: The first "View All" usually belongs to Hosting if it exists.
+    // But let's try to be precise if possible.
 
-    const anchors = Array.from(root.querySelectorAll('a[href^="/"]'));
-    return anchors
-      .map(a => a.getAttribute('href'))
-      .filter(href => {
-        if (!href || href.length < 2) return false;
-        // Blocklist common non-event paths
-        const ignore = ['/user', '/home', '/create', '/signin', '/calendar', '/discover', '/explore', '/pricing', '/legal'];
-        if (ignore.some(prefix => href.startsWith(prefix))) return false;
-        // Filter out IDs that are clearly not events (if any)
-        if (href.startsWith('?')) return false;
-        // Event slugs strictly start with / usually and don't have multiple segments unless it's /event/evt-...
-        // Allow /slug and /event/evt-...
-        return true;
-      });
-  });
+    const viewAllBtns = await page.getByText('View All').all();
 
-  const uniqueSlugs = [...new Set(eventUrls)]; // Deduplicate
-  console.log(`Found ${uniqueSlugs.length} unique event links.`);
-  // console.log(uniqueSlugs); // Debug
+    if (viewAllBtns.length > 0) {
+      console.log(`Found ${viewAllBtns.length} 'View All' buttons.`);
+      // Click the first one (usually Hosting)
+      console.log("Clicking 'View All' #1 (Hosting)...");
+      if (await viewAllBtns[0].isVisible()) {
+        await viewAllBtns[0].click();
+        await page.waitForTimeout(1000);
+        await scrapeModal();
+      }
 
-  if (uniqueSlugs.length === 0) {
-    console.log("No events found. Exiting.");
-    await browser.close();
-    return;
+      // Check for second one (Past Events)
+      if (viewAllBtns.length > 1) {
+        console.log("Clicking 'View All' #2 (Past Events)...");
+        if (await viewAllBtns[1].isVisible()) {
+          await viewAllBtns[1].click();
+          await page.waitForTimeout(1000);
+          await scrapeModal();
+        }
+      }
+    } else {
+      console.log("No 'View All' buttons found.");
+    }
+  } catch (err) {
+    console.log("Error processing View All buttons:", err.message);
   }
 
-  // Close modal if open
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(500);
+  const uniqueSlugs = [...allEventUrls]; // Deduplicate
+  console.log(`Found ${uniqueSlugs.length} unique event links.`);
 
   // 5️⃣ Process each event
   for (let i = 0; i < uniqueSlugs.length; i++) {
@@ -171,81 +142,99 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
     try {
       // Go to the event page
       await page.goto(fullUrl, { waitUntil: 'domcontentloaded' });
-      await page.waitForTimeout(1000);
-
-      // Resolve Event ID
-      // 1. Check URL for evt-...
-      // 2. Check for "Manage Event" button href
-      // 3. Check page source/metadata
+      await page.waitForTimeout(1500);
 
       let evtId = null;
-      let currentUrl = page.url();
 
-      let match = currentUrl.match(/evt-[A-Za-z0-9]+/);
-      if (match) {
-        evtId = match[0];
-      } else {
-        // Check for Manage Button
-        // Usually text "Manage Event" or "Manage"
-        const manageBtn = page.locator('a').filter({ hasText: /Manage( Event)?/i }).first();
+      // 1. Check if we are already on a manage page or if URL has ID
+      const currentUrl = page.url();
+      const urlMatch = currentUrl.match(/evt-[A-Za-z0-9]+/);
+      if (urlMatch) {
+        evtId = urlMatch[0];
+      }
+
+      // 2. Check "Manage Event" button href
+      if (!evtId) {
+        const manageBtn = page.locator('a[href*="/event/manage/"], a[href*="evt-"]').first();
         if (await manageBtn.isVisible()) {
           const href = await manageBtn.getAttribute('href');
-          if (href) {
-            match = href.match(/evt-[A-Za-z0-9]+/);
-            if (match) {
-              evtId = match[0];
-              console.log("   Found ID via Manage Button.");
-            }
+          // console.log("   Manage Btn Href:", href);
+          const hrefMatch = href.match(/evt-[A-Za-z0-9]+/);
+          if (hrefMatch) {
+            evtId = hrefMatch[0];
+            console.log("   Found ID via Manage Button Href:", evtId);
           }
         }
+      }
 
-        if (!evtId) {
-          // Check page content (brute force)
-          // Use a strictly bounded regex to avoid false positives if possible, but evt- is usually unique enough
-          const content = await page.content();
-          match = content.match(/evt-[A-Za-z0-9]{10,}/); // IDs are usually reasonably long
-          if (match) evtId = match[0];
+      // 3. Check specific metadata / next data
+      if (!evtId) {
+        const content = await page.content();
+        // Be conservative: evt- followed by alphanumeric, at least 10 chars
+        const match = content.match(/evt-[A-Za-z0-9]{10,}/);
+        if (match) {
+          evtId = match[0];
+          console.log("   Found ID via Page Source scrape:", evtId);
         }
       }
 
       if (!evtId) {
-        console.log(`   ❌ Could not resolve Event ID for ${slug}. Skipping.`);
+        console.log("   ❌ Could not resolve Event ID. Skipping.");
         continue;
       }
 
-      console.log(`   Resolved Event ID: ${evtId}`);
+      // Construct Guests URL directly
+      const guestsUrl = `https://lu.ma/event/manage/${evtId}/guests`;
+      console.log(`   Navigating to: ${guestsUrl}`);
+      await page.goto(guestsUrl, { waitUntil: 'domcontentloaded' });
 
-      // Construct Guests URL
-      const manageGuestsUrl = `https://lu.ma/event/manage/${evtId}/guests`;
-      console.log(`   Navigating to guests page...`);
-
-      await page.goto(manageGuestsUrl, { waitUntil: 'networkidle' });
+      // Wait for potential redirect or load
+      await page.waitForTimeout(2500);
 
       // 6️⃣ Click "Download as CSV"
-      // We look for the button specifically
-      const downloadBtn = page.getByText('Download as CSV');
+      // Inspection revealed it's an ICON button in the header toolbar, often without text "Download as CSV".
+      // We look for aria-labels or known classes.
 
-      // Wait for it
-      try {
-        await downloadBtn.waitFor({ state: 'visible', timeout: 5000 });
-      } catch (e) { }
+      // Try multiple selectors
+      const potentialSelectors = [
+        'button[aria-label*="Download"]',
+        'button[aria-label*="Export"]',
+        'button:has(svg path[d*="M19"])', // Common download icon path start (brittle but tries)
+        'div[role="button"][aria-label*="Download"]',
+        'button:has-text("Download")', // Fallback if text exists
+        'button:has-text("Export")',
+        '.content-header button:last-child' // Often the last button in header
+      ];
 
-      if (await downloadBtn.isVisible()) {
-        console.log("   Found 'Download as CSV'. Clicking...");
+      let downloadBtn = null;
+      for (const selector of potentialSelectors) {
+        const btn = page.locator(selector).first();
+        if (await btn.isVisible()) {
+          downloadBtn = btn;
+          console.log(`   Found potential download button via selector: ${selector}`);
+          break;
+        }
+      }
 
-        // Setup download listener
-        const downloadPromise = page.waitForEvent('download', { timeout: 15000 });
-        await downloadBtn.click();
-        const download = await downloadPromise;
+      if (downloadBtn) {
+        console.log("   Clicking Download button...");
 
-        const savePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
-        await download.saveAs(savePath);
-        console.log(`   ✅ Successfully saved: ${savePath}`);
+        try {
+          const [download] = await Promise.all([
+            page.waitForEvent('download', { timeout: 15000 }),
+            downloadBtn.click()
+          ]);
+
+          const savePath = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
+          await download.saveAs(savePath);
+          console.log(`   ✅ Successfully saved: ${savePath}`);
+        } catch (e) {
+          console.log(`   ⚠️ Failed to capture download: ${e.message}`);
+        }
 
       } else {
-        console.log("   ⚠️ 'Download as CSV' button not found. You might not have permission, be logged out, or have no guests.");
-        // Debug: check title
-        console.log(`   Page Title: ${await page.title()}`);
+        console.log("   ⚠️ 'Download/Export' button not found.");
+        // await page.screenshot({ path: `debug_no_csv_${slug.replace(/\//g, '')}.png` });
       }
 
     } catch (err) {
