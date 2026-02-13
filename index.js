@@ -1,4 +1,4 @@
-console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Robust & Sequential)");
+console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Sequential + Robust)");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -7,7 +7,6 @@ const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
 const csv = require('csv-parser');
 
-// Clean listeners
 require('events').EventEmitter.defaultMaxListeners = 20;
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
@@ -250,28 +249,47 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
       }
 
       if (btn) {
+        // console.log(`     Found DL button for ${evtId}`);
         let download = null;
         // Retry
         for (let i = 1; i <= 3; i++) {
           try {
-            const p = workerPage.waitForEvent('download', { timeout: 30000 }); // 30s
-            await btn.click({ timeout: 5000, force: true });
+            process.stdout.write(`Attempt ${i}...`);
+            // IMPORTANT: increase default navigation timeouts to allow for slow Luma response
+            workerPage.setDefaultTimeout(60000);
+
+            const p = workerPage.waitForEvent('download', { timeout: 45000 }); // 45s for file gen
+
+            if (await btn.isEnabled()) {
+              await btn.click({ timeout: 5000, force: true });
+            } else {
+              // Sometimes it's disabled if generating? Wait.
+              await workerPage.waitForTimeout(2000);
+              await btn.click({ timeout: 5000, force: true });
+            }
+
             download = await p;
             break;
-          } catch (e) { if (i < 3) await workerPage.waitForTimeout(2000); }
+          } catch (e) {
+            // console.log(`fail ${i}: ${e.message}`);
+            if (i < 3) await workerPage.waitForTimeout(3000);
+          }
         }
 
         if (download) {
           const p = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
           await download.saveAs(p);
           processedCount++;
-          process.stdout.write(`✅`); // Success Marker
+          process.stdout.write(` ✅ Saved\n`);
           if (supabase) await upsertGuestsToSupabase(p, evtId, eventName);
         } else {
           console.log(`   ❌ Timeout DL ${evtId}`);
+          // Take a screenshot to inspect later
+          await workerPage.screenshot({ path: `debug_timeout_${evtId}.png` });
         }
       } else {
-        // console.log(`   ⚠️ No DL Btn ${evtId}`);
+        console.log(`   ⚠️ No DL Btn ${evtId}`);
+        await workerPage.screenshot({ path: `debug_nobtn_${evtId}.png` });
       }
 
     } catch (e) {
