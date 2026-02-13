@@ -1,4 +1,4 @@
-console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Sequential + Robust)");
+console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Rate Limit Friendly)");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -30,7 +30,7 @@ if (supabaseUrl && supabaseKey) {
   console.log("⚠️ SUPABASE_URL or SUPABASE_KEY missing. Skipping sync.");
 }
 
-// Helper: Upsert CSV to Supabase with Enhanced Mapping
+// Helper: Upsert CSV
 async function upsertGuestsToSupabase(filePath, eventId, eventName) {
   if (!supabase) return;
 
@@ -38,26 +38,20 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
   return new Promise((resolve, reject) => {
     fs.createReadStream(filePath)
       .pipe(csv({
-        mapHeaders: ({ header }) => header.trim().replace(/^\ufeff/, '') // Strip BOM & whitespace
+        mapHeaders: ({ header }) => header.trim().replace(/^\ufeff/, '')
       }))
       .on('data', (row) => {
-        // Flexible column lookup helper
-        // Tries: Exact -> Case-insensitive -> Fuzzy content
         const getVal = (possibleKeys) => {
           const keys = Array.isArray(possibleKeys) ? possibleKeys : [possibleKeys];
-          // 1. Exact match
           for (const k of keys) {
             if (row[k] !== undefined && row[k] !== '') return row[k];
           }
-          // 2. Case-Insensitive (strict key name)
           for (const k of keys) {
             const hit = Object.keys(row).find(x => x.toLowerCase() === k.toLowerCase());
             if (hit && row[hit] !== '') return row[hit];
           }
-          // 3. Fuzzy match (key containing substring, e.g. "LinkedIn")
           for (const k of keys) {
             const hit = Object.keys(row).find(x => x.toLowerCase().includes(k.toLowerCase()));
-            // Avoid overly broad matches like 'a' matching everything
             if (hit && k.length > 3 && row[hit] !== '') return row[hit];
           }
           return null;
@@ -69,50 +63,31 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
             event_id: eventId,
             event_name: eventName || 'Unknown Event',
             email: email,
-            // Priority Mapping
             api_id: getVal(['api_id', 'Guest ID']),
             name: getVal(['name', 'Guest Name', 'Full Name']),
             status: getVal(['approval_status', 'registration_status', 'status']) || 'registered',
             ticket_type: getVal(['ticket_name', 'ticket_type', 'Ticket Type']),
             created_at: getVal(['created_at', 'Registration Date']) || new Date().toISOString(),
             checked_in_at: getVal(['checked_in_at', 'Check-in Time']),
-
-            // Metadata / Enhanced Fields with broad search
             linkedin_url: getVal(['linkedin', 'What is your LinkedIn profile?', 'LinkedIn Profile']),
             company: getVal(['company', 'What company do you work for?', 'Organization']),
             job_title: getVal(['job_title', 'What is your job title?', 'Role']),
             phone: getVal(['phone_number', 'phone']),
-
             synced_at: new Date().toISOString(),
-            // Store full row
             raw_data: row
           });
         }
       })
       .on('end', async () => {
-        if (guests.length === 0) {
-          resolve();
-          return;
-        }
-
-        // Chunk upserts
+        if (guests.length === 0) resolve();
         const BATCH_SIZE = 500;
         for (let i = 0; i < guests.length; i += BATCH_SIZE) {
           const batch = guests.slice(i, i + BATCH_SIZE);
-          const { error } = await supabase
-            .from('luma_guests')
-            .upsert(batch, { onConflict: 'event_id, email' });
-
-          if (error) {
-            console.log(`   ❌ Supabase Upsert Error (${eventId}): ${error.message}`);
-          }
+          await supabase.from('luma_guests').upsert(batch, { onConflict: 'event_id, email' });
         }
         resolve();
       })
-      .on('error', (err) => {
-        console.log(`   ❌ CSV Read Error: ${err.message}`);
-        resolve(); // Don't crash worker
-      });
+      .on('error', (err) => resolve());
   });
 }
 
@@ -126,7 +101,6 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
-  // Discovery Phase
   const context = await browser.newContext({ storageState: sessionFile, userAgent: 'Mozilla/5.0...' });
   const page = await context.newPage();
 
@@ -141,14 +115,12 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
       process.stdout.write("   Scrolling modal");
       let previousHeight = 0;
       let currentHeight = await modal.evaluate(el => el.scrollHeight);
-      // Wait for lazy load
       let attempts = 0;
       while (previousHeight !== currentHeight && attempts < 30) {
         previousHeight = currentHeight;
         await modal.evaluate(el => el.scrollTo(0, el.scrollHeight));
         await page.waitForTimeout(1000);
         currentHeight = await modal.evaluate(el => el.scrollHeight);
-        // Double check for lagging load
         if (previousHeight === currentHeight) {
           await page.waitForTimeout(1000);
           currentHeight = await modal.evaluate(el => el.scrollHeight);
@@ -195,23 +167,15 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
   await context.close();
 
   const uniqueSlugs = [...allEventUrls];
-  console.log(`\n📋 Found ${uniqueSlugs.length} unique events. Starting sequential processing...`);
-
-  const queue = [...uniqueSlugs];
-  let processedCount = 0;
+  console.log(`\n📋 Found ${uniqueSlugs.length} unique events. Starting Rate-Limited Loop...`);
 
   // Processing Logic
   const processEventItem = async (workerPage, slug) => {
     try {
-      // console.log(`   Processing ${slug}...`);
       await workerPage.goto(`https://lu.ma${slug}`, { waitUntil: 'domcontentloaded' });
       await workerPage.waitForTimeout(500);
 
-      let eventName = null;
-      try {
-        const h1 = workerPage.locator('h1').first();
-        if (await h1.isVisible()) eventName = await h1.innerText();
-      } catch (e) { }
+      let eventName = await workerPage.locator('h1').first().innerText().catch(() => null);
 
       let evtId = null;
       const curUrl = workerPage.url();
@@ -240,7 +204,7 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
 
       const selectors = [
         'button[aria-label*="Download"]', 'button[aria-label*="Export"]',
-        'button:has(svg path[d*="M19"])', 'div[role="button"][aria-label*="Download"]'
+        'div[role="button"][aria-label*="Download"]'
       ];
       let btn = null;
       for (const s of selectors) {
@@ -249,55 +213,52 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
       }
 
       if (btn) {
-        // console.log(`     Found DL button for ${evtId}`);
         let download = null;
-        // Retry
         for (let i = 1; i <= 3; i++) {
           try {
-            process.stdout.write(`Attempt ${i}...`);
-            // IMPORTANT: increase default navigation timeouts to allow for slow Luma response
+            process.stdout.write(`DL Attempt ${i}...`);
             workerPage.setDefaultTimeout(60000);
 
-            const p = workerPage.waitForEvent('download', { timeout: 45000 }); // 45s for file gen
+            const p = workerPage.waitForEvent('download', { timeout: 60000 });
 
             if (await btn.isEnabled()) {
               await btn.click({ timeout: 5000, force: true });
             } else {
-              // Sometimes it's disabled if generating? Wait.
               await workerPage.waitForTimeout(2000);
               await btn.click({ timeout: 5000, force: true });
             }
-
             download = await p;
             break;
           } catch (e) {
-            // console.log(`fail ${i}: ${e.message}`);
-            if (i < 3) await workerPage.waitForTimeout(3000);
+            // Check if specific rate limit text appeared?
+            const rateMsg = await workerPage.getByText('rate limit', { exact: false }).isVisible();
+            if (rateMsg) {
+              console.log(`   ⛔ RATE LIMIT DETECTED for ${evtId}. Waiting 2m...`);
+              await workerPage.waitForTimeout(120000); // 2 min penalty
+              i--; // Retry same attempt
+              continue;
+            }
+            if (i < 3) await workerPage.waitForTimeout(5000);
           }
         }
 
         if (download) {
           const p = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
           await download.saveAs(p);
-          processedCount++;
           process.stdout.write(` ✅ Saved\n`);
           if (supabase) await upsertGuestsToSupabase(p, evtId, eventName);
         } else {
           console.log(`   ❌ Timeout DL ${evtId}`);
-          // Take a screenshot to inspect later
           await workerPage.screenshot({ path: `debug_timeout_${evtId}.png` });
         }
       } else {
         console.log(`   ⚠️ No DL Btn ${evtId}`);
-        await workerPage.screenshot({ path: `debug_nobtn_${evtId}.png` });
       }
-
     } catch (e) {
       console.log(`   ❌ Err ${slug}: ${e.message}`);
     }
   };
 
-  // Run Sequential
   const workerContext = await browser.newContext({
     storageState: sessionFile ? sessionFile : undefined,
     acceptDownloads: true,
@@ -307,9 +268,13 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
 
   for (const slug of uniqueSlugs) {
     await processEventItem(workerPage, slug);
+    // Wait generous time to respect rate limits
+    // 30 seconds pause between each event
+    console.log('   ⏳ Waiting 30s for next event (Rate Limit Guard)...');
+    await workerPage.waitForTimeout(30000);
   }
 
   await workerContext.close();
-  console.log(`\n\n🎉 Done! Processed ${processedCount} events.`);
+  console.log(`\n\n🎉 Done!`);
   await browser.close();
 })();
