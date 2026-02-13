@@ -1,4 +1,4 @@
-console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Parallel with Event Names)");
+console.log("Lu.ma Event ID Extractor & CSV Downloader + Supabase Sync (Robust & Sequential)");
 
 require('dotenv').config();
 const fs = require('fs');
@@ -7,7 +7,7 @@ const { chromium } = require('playwright');
 const { createClient } = require('@supabase/supabase-js');
 const csv = require('csv-parser');
 
-// Increase listener limit for cleaner logs with parallel workers
+// Clean listeners
 require('events').EventEmitter.defaultMaxListeners = 20;
 
 const DOWNLOAD_DIR = path.resolve(process.cwd(), 'downloads');
@@ -38,38 +38,54 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
   const guests = [];
   return new Promise((resolve, reject) => {
     fs.createReadStream(filePath)
-      .pipe(csv())
+      .pipe(csv({
+        mapHeaders: ({ header }) => header.trim().replace(/^\ufeff/, '') // Strip BOM & whitespace
+      }))
       .on('data', (row) => {
-        const email = row['email'] || row['Email'];
-        if (email) {
-          // Extract custom fields safely
-          // Luma often uses Question headers like "What is your LinkedIn profile?"
-          // We try to find columns that 'look like' these fields if exact match fails
-          const getField = (keywords) => {
-            const key = Object.keys(row).find(k => k.toLowerCase().includes(keywords));
-            return key ? row[key] : null;
-          };
+        // Flexible column lookup helper
+        // Tries: Exact -> Case-insensitive -> Fuzzy content
+        const getVal = (possibleKeys) => {
+          const keys = Array.isArray(possibleKeys) ? possibleKeys : [possibleKeys];
+          // 1. Exact match
+          for (const k of keys) {
+            if (row[k] !== undefined && row[k] !== '') return row[k];
+          }
+          // 2. Case-Insensitive (strict key name)
+          for (const k of keys) {
+            const hit = Object.keys(row).find(x => x.toLowerCase() === k.toLowerCase());
+            if (hit && row[hit] !== '') return row[hit];
+          }
+          // 3. Fuzzy match (key containing substring, e.g. "LinkedIn")
+          for (const k of keys) {
+            const hit = Object.keys(row).find(x => x.toLowerCase().includes(k.toLowerCase()));
+            // Avoid overly broad matches like 'a' matching everything
+            if (hit && k.length > 3 && row[hit] !== '') return row[hit];
+          }
+          return null;
+        };
 
+        const email = getVal(['email', 'Email Address']);
+        if (email) {
           guests.push({
             event_id: eventId,
             event_name: eventName || 'Unknown Event',
             email: email,
-            api_id: row['api_id'] || null, // Luma Guest ID
-            name: row['name'] || row['Name'] || `${row['first_name'] || ''} ${row['last_name'] || ''}`.trim(),
-            status: row['approval_status'] || row['status'] || 'registered',
-            ticket_type: row['ticket_name'] || row['Ticket Type'] || null,
-            created_at: row['created_at'] || new Date().toISOString(),
-            checked_in_at: row['checked_in_at'] || null,
+            // Priority Mapping
+            api_id: getVal(['api_id', 'Guest ID']),
+            name: getVal(['name', 'Guest Name', 'Full Name']),
+            status: getVal(['approval_status', 'registration_status', 'status']) || 'registered',
+            ticket_type: getVal(['ticket_name', 'ticket_type', 'Ticket Type']),
+            created_at: getVal(['created_at', 'Registration Date']) || new Date().toISOString(),
+            checked_in_at: getVal(['checked_in_at', 'Check-in Time']),
 
-            // Metadata / Enhanced Fields
-            linkedin_url: row['What is your LinkedIn profile?'] || getField('linkedin'),
-            company: row['What company do you work for?'] || getField('company'),
-            job_title: row['What is your job title?'] || getField('job title'),
-            phone: row['phone_number'] || null,
+            // Metadata / Enhanced Fields with broad search
+            linkedin_url: getVal(['linkedin', 'What is your LinkedIn profile?', 'LinkedIn Profile']),
+            company: getVal(['company', 'What company do you work for?', 'Organization']),
+            job_title: getVal(['job_title', 'What is your job title?', 'Role']),
+            phone: getVal(['phone_number', 'phone']),
 
             synced_at: new Date().toISOString(),
-
-            // Store full row as JSONB for future-proofing
+            // Store full row
             raw_data: row
           });
         }
@@ -101,12 +117,8 @@ async function upsertGuestsToSupabase(filePath, eventId, eventName) {
   });
 }
 
-// WORKER LOGIC
-// We process events in a queue with limited concurrency
-const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
-
+// Sequential Logic
 (async () => {
-  // Session setup
   let sessionFile = 'storageState.json';
   if (!fs.existsSync(sessionFile) && fs.existsSync('session.json')) sessionFile = 'session.json';
 
@@ -115,7 +127,7 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
     args: ['--no-sandbox', '--disable-setuid-sandbox']
   });
 
-  // Initial Discovery Phase (Single Page)
+  // Discovery Phase
   const context = await browser.newContext({ storageState: sessionFile, userAgent: 'Mozilla/5.0...' });
   const page = await context.newPage();
 
@@ -123,7 +135,6 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
   await page.goto('https://lu.ma/user/murray', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2000);
 
-  // Scrape Logic 
   const allEventUrls = new Set();
   async function scrapeModal() {
     const modal = page.locator('.lux-modal-body');
@@ -131,12 +142,14 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
       process.stdout.write("   Scrolling modal");
       let previousHeight = 0;
       let currentHeight = await modal.evaluate(el => el.scrollHeight);
+      // Wait for lazy load
       let attempts = 0;
       while (previousHeight !== currentHeight && attempts < 30) {
         previousHeight = currentHeight;
         await modal.evaluate(el => el.scrollTo(0, el.scrollHeight));
-        await page.waitForTimeout(1000); // Faster scroll
+        await page.waitForTimeout(1000);
         currentHeight = await modal.evaluate(el => el.scrollHeight);
+        // Double check for lagging load
         if (previousHeight === currentHeight) {
           await page.waitForTimeout(1000);
           currentHeight = await modal.evaluate(el => el.scrollHeight);
@@ -162,18 +175,14 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
     }
   }
 
-  // View All buttons
-  // Try to find "View all" buttons.
   const viewAllBtns = await page.getByText('View All').all();
   if (viewAllBtns.length > 0) {
-    // Typically first is Hosting, second is Past
     console.log(`   Clicking 'View All' (Hosting)...`);
     if (await viewAllBtns[0].isVisible()) {
       await viewAllBtns[0].click();
       await page.waitForTimeout(1000);
       await scrapeModal();
     }
-
     if (viewAllBtns.length > 1) {
       console.log(`   Clicking 'View All' (Past)...`);
       if (await viewAllBtns[1].isVisible()) {
@@ -184,33 +193,28 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
     }
   }
 
-  await context.close(); // Close discovery context
+  await context.close();
 
   const uniqueSlugs = [...allEventUrls];
-  console.log(`\n📋 Found ${uniqueSlugs.length} unique events. Starting workers...`);
+  console.log(`\n📋 Found ${uniqueSlugs.length} unique events. Starting sequential processing...`);
 
-  // WORKER QUEUE 
   const queue = [...uniqueSlugs];
   let processedCount = 0;
 
-  // Worker Function
-  const processEventItem = async (workerPage, slug, workerId) => {
-    // console.log(`   [W${workerId}] Start ${slug}`);
+  // Processing Logic
+  const processEventItem = async (workerPage, slug) => {
     try {
+      // console.log(`   Processing ${slug}...`);
       await workerPage.goto(`https://lu.ma${slug}`, { waitUntil: 'domcontentloaded' });
-      await workerPage.waitForTimeout(500); // Small wait
+      await workerPage.waitForTimeout(500);
 
-      // EXTRACT EVENT NAME (H1)
       let eventName = null;
       try {
         const h1 = workerPage.locator('h1').first();
-        if (await h1.isVisible()) {
-          eventName = await h1.innerText();
-        }
+        if (await h1.isVisible()) eventName = await h1.innerText();
       } catch (e) { }
 
       let evtId = null;
-      // ID Extraction Strategies
       const curUrl = workerPage.url();
       if (curUrl.match(/evt-[A-Za-z0-9]+/)) evtId = curUrl.match(/evt-[A-Za-z0-9]+/)[0];
 
@@ -228,15 +232,13 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
       }
 
       if (!evtId) {
-        console.log(`   [W${workerId}] ⚠️ No ID for ${slug}`);
+        console.log(`   ⚠️ No ID for ${slug}`);
         return;
       }
 
-      // Go to Guests
       await workerPage.goto(`https://lu.ma/event/manage/${evtId}/guests`, { waitUntil: 'domcontentloaded' });
       await workerPage.waitForTimeout(1500);
 
-      // Find Button
       const selectors = [
         'button[aria-label*="Download"]', 'button[aria-label*="Export"]',
         'button:has(svg path[d*="M19"])', 'div[role="button"][aria-label*="Download"]'
@@ -249,54 +251,47 @@ const CONCURRENT_WORKERS = 4; // Run 4 tabs at once
 
       if (btn) {
         let download = null;
+        // Retry
         for (let i = 1; i <= 3; i++) {
           try {
-            const p = workerPage.waitForEvent('download', { timeout: 20000 }); // 20s
+            const p = workerPage.waitForEvent('download', { timeout: 30000 }); // 30s
             await btn.click({ timeout: 5000, force: true });
             download = await p;
             break;
-          } catch (e) { if (i < 3) await workerPage.waitForTimeout(1000); }
+          } catch (e) { if (i < 3) await workerPage.waitForTimeout(2000); }
         }
 
         if (download) {
           const p = path.join(DOWNLOAD_DIR, `${evtId}.csv`);
           await download.saveAs(p);
           processedCount++;
-          process.stdout.write(`✅`); // Compact progress
-          // Sync with Event Name
+          process.stdout.write(`✅`); // Success Marker
           if (supabase) await upsertGuestsToSupabase(p, evtId, eventName);
         } else {
-          console.log(`   [W${workerId}] ❌ Timeout DL ${evtId}`);
+          console.log(`   ❌ Timeout DL ${evtId}`);
         }
       } else {
-        // console.log(`   [W${workerId}] ⚠️ No DL Btn ${evtId}`);
+        // console.log(`   ⚠️ No DL Btn ${evtId}`);
       }
 
     } catch (e) {
-      console.log(`   [W${workerId}] ❌ Err ${slug}: ${e.message}`);
+      console.log(`   ❌ Err ${slug}: ${e.message}`);
     }
   };
 
-  // Launch Workers
-  const workers = [];
-  for (let i = 0; i < CONCURRENT_WORKERS; i++) {
-    workers.push(async () => {
-      const wContext = await browser.newContext({
-        storageState: sessionFile ? sessionFile : undefined,
-        acceptDownloads: true,
-        viewport: { width: 1920, height: 1080 }
-      });
-      const wPage = await wContext.newPage();
+  // Run Sequential
+  const workerContext = await browser.newContext({
+    storageState: sessionFile ? sessionFile : undefined,
+    acceptDownloads: true,
+    viewport: { width: 1920, height: 1080 }
+  });
+  const workerPage = await workerContext.newPage();
 
-      while (queue.length > 0) {
-        const slug = queue.shift();
-        await processEventItem(wPage, slug, i + 1);
-      }
-      await wContext.close();
-    });
+  for (const slug of uniqueSlugs) {
+    await processEventItem(workerPage, slug);
   }
 
-  await Promise.all(workers.map(w => w()));
+  await workerContext.close();
   console.log(`\n\n🎉 Done! Processed ${processedCount} events.`);
   await browser.close();
 })();
