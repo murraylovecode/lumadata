@@ -17,7 +17,7 @@ if (!fs.existsSync(DOWNLOAD_DIR)) {
 
 // 1. Initialize Supabase
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_KEY;
+const supabaseKey = process.env.SUPABASE_KEY;
 let supabase = null;
 
 if (supabaseUrl && supabaseKey) {
